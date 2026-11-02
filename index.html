@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chart Monitor</title>
+<style>
+  :root { --bg:#0e1013; --panel:#161a20; --line:#262c35; --text:#d6dbe3; --muted:#9aa4b2; --accent:#2f81f7; }
+  * { box-sizing: border-box; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--text);
+    font:14px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  body { display:flex; flex-direction:column; }
+  .bar { display:flex; flex-wrap:wrap; gap:10px 16px; align-items:center; padding:8px 12px;
+    background:var(--panel); border-bottom:1px solid var(--line); }
+  .group { display:flex; gap:4px; align-items:center; }
+  button, select { background:var(--bg); color:var(--text); border:1px solid var(--line);
+    border-radius:6px; padding:6px 10px; font:inherit; cursor:pointer; }
+  button.on { background:var(--accent); border-color:var(--accent); color:#fff; }
+  label { display:flex; gap:4px; align-items:center; cursor:pointer; }
+  .note { margin-left:auto; font-size:12px; color:var(--muted); }
+  #grid { flex:1; display:grid; gap:4px; padding:4px; min-height:0; }
+  .cell { display:flex; flex-direction:column; min-height:0; min-width:0;
+    background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
+  .cell header { display:flex; justify-content:space-between; align-items:center;
+    padding:4px 8px; font-size:12px; color:var(--muted); }
+  .cell select { padding:2px 6px; font-size:12px; }
+  .chart { flex:1; min-height:0; }
+  .tradingview-widget-container, .tradingview-widget-container__widget { height:100%; width:100%; }
+  @media (max-width: 800px) { #grid { grid-template-columns: 1fr !important; grid-template-rows: none !important; overflow:auto; }
+    .cell { height: 70vh; } .cell.big { grid-row:auto !important; grid-column:auto !important; } }
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="group" id="symbols"></div>
+  <div class="group"><select id="layout"></select></div>
+  <div class="group"><select id="style">
+    <option value="1">แท่งเทียน</option>
+    <option value="8">Heikin Ashi</option>
+  </select></div>
+  <div class="group">
+    <label><input type="checkbox" id="stoch"> Stoch</label>
+    <label><input type="checkbox" id="rsi"> RSI</label>
+  </div>
+  <span class="note">ข้อมูลฟรีจาก TradingView ฟิวเจอร์สอาจดีเลย์</span>
+</div>
+<div id="grid"></div>
+
+<script>
+// ===== ตั้งค่า (แก้ตรงนี้ได้) =====
+const SYMBOLS = {
+  XAUUSD: "OANDA:XAUUSD",
+  NASDAQ: "OANDA:NAS100USD",
+  GC:     "COMEX:GC1!",
+  MGC:    "COMEX:MGC1!"
+};
+const INTERVALS = { "1":"1m", "3":"3m", "5":"5m", "15":"15m", "30":"30m", "60":"1h", "240":"4h", "D":"1D" };
+const LAYOUTS = {
+  "2x2": { label:"2×2 (4 ช่อง)",        css:"grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr", n:4 },
+  "big": { label:"2 เล็ก + 1 ใหญ่",      css:"grid-template-columns:1fr 1.4fr;grid-template-rows:1fr 1fr", n:3, big:2 },
+  "1x3": { label:"3 คอลัมน์",            css:"grid-template-columns:repeat(3,1fr);grid-template-rows:1fr", n:3 },
+  "1x2": { label:"2 คอลัมน์",            css:"grid-template-columns:1fr 1fr;grid-template-rows:1fr", n:2 },
+  "1x1": { label:"ช่องเดียว",             css:"grid-template-columns:1fr;grid-template-rows:1fr", n:1 }
+};
+const DEFAULT_STATE = {
+  symbol: "XAUUSD", layout: "2x2", style: "1", stoch: true, rsi: true,
+  intervals: ["1", "5", "15", "60"]
+};
+// =================================
+
+let state = Object.assign({}, DEFAULT_STATE);
+try {
+  const saved = JSON.parse(localStorage.getItem("chartMonitorState") || "null");
+  if (saved && SYMBOLS[saved.symbol] && LAYOUTS[saved.layout]) state = Object.assign(state, saved);
+} catch (e) {}
+
+function save() {
+  try { localStorage.setItem("chartMonitorState", JSON.stringify(state)); } catch (e) {}
+}
+
+function mount(el, interval) {
+  el.innerHTML = "";
+  const box = document.createElement("div");
+  box.className = "tradingview-widget-container";
+  const inner = document.createElement("div");
+  inner.className = "tradingview-widget-container__widget";
+  box.appendChild(inner);
+
+  const studies = [];
+  if (state.stoch) studies.push("STD;Stochastic");
+  if (state.rsi) studies.push("STD;RSI");
+
+  const s = document.createElement("script");
+  s.src = "https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js";
+  s.async = true;
+  s.innerHTML = JSON.stringify({
+    autosize: true,
+    symbol: SYMBOLS[state.symbol],
+    interval: interval,
+    timezone: "Asia/Bangkok",
+    theme: "dark",
+    style: state.style,
+    locale: "th_TH",
+    backgroundColor: "#0e1013",
+    allow_symbol_change: true,
+    hide_side_toolbar: false,
+    withdateranges: true,
+    save_image: true,
+    calendar: false,
+    studies: studies,
+    support_host: "https://www.tradingview.com"
+  });
+  box.appendChild(s);
+  el.appendChild(box);
+}
+
+function renderGrid() {
+  const layout = LAYOUTS[state.layout];
+  const grid = document.getElementById("grid");
+  grid.style.cssText = layout.css;
+  grid.innerHTML = "";
+
+  for (let i = 0; i < layout.n; i++) {
+    if (!state.intervals[i]) state.intervals[i] = "15";
+    const cell = document.createElement("div");
+    cell.className = "cell";
+    if (layout.big === i) {
+      cell.classList.add("big");
+      cell.style.gridRow = "1 / span 2";
+      cell.style.gridColumn = "2";
+    }
+
+    const header = document.createElement("header");
+    const title = document.createElement("span");
+    title.textContent = state.symbol + " · " + SYMBOLS[state.symbol];
+    const sel = document.createElement("select");
+    for (const k in INTERVALS) {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = INTERVALS[k];
+      if (k === state.intervals[i]) o.selected = true;
+      sel.appendChild(o);
+    }
+    header.appendChild(title);
+    header.appendChild(sel);
+
+    const chart = document.createElement("div");
+    chart.className = "chart";
+
+    sel.addEventListener("change", () => {
+      state.intervals[i] = sel.value;
+      save();
+      mount(chart, sel.value);
+    });
+
+    cell.appendChild(header);
+    cell.appendChild(chart);
+    grid.appendChild(cell);
+    mount(chart, state.intervals[i]);
+  }
+}
+
+function renderToolbar() {
+  const box = document.getElementById("symbols");
+  box.innerHTML = "";
+  for (const name in SYMBOLS) {
+    const b = document.createElement("button");
+    b.textContent = name;
+    if (name === state.symbol) b.classList.add("on");
+    b.addEventListener("click", () => {
+      state.symbol = name; save(); renderToolbar(); renderGrid();
+    });
+    box.appendChild(b);
+  }
+}
+
+const layoutSel = document.getElementById("layout");
+for (const k in LAYOUTS) {
+  const o = document.createElement("option");
+  o.value = k; o.textContent = LAYOUTS[k].label;
+  layoutSel.appendChild(o);
+}
+layoutSel.value = state.layout;
+layoutSel.addEventListener("change", () => { state.layout = layoutSel.value; save(); renderGrid(); });
+
+const styleSel = document.getElementById("style");
+styleSel.value = state.style;
+styleSel.addEventListener("change", () => { state.style = styleSel.value; save(); renderGrid(); });
+
+for (const id of ["stoch", "rsi"]) {
+  const cb = document.getElementById(id);
+  cb.checked = !!state[id];
+  cb.addEventListener("change", () => { state[id] = cb.checked; save(); renderGrid(); });
+}
+
+renderToolbar();
+renderGrid();
+</script>
+</body>
+</html>
