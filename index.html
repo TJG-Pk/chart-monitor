@@ -14,14 +14,15 @@
     <option value="candles">แท่งเทียน</option>
     <option value="ha">Heikin Ashi</option>
   </select></div>
-  <div class="group">
-    <label><input type="checkbox" id="stoch"> Stoch</label>
-    <label><input type="checkbox" id="rsi"> RSI</label>
-  </div>
+  <button id="openIndicators" title="เพิ่ม / ตั้งค่า indicator">ƒx Indicators</button>
+  <div class="group tools" id="tools"></div>
+  <div class="group" id="drawOptions" hidden></div>
+  <button id="openAlerts" title="รายการ alert">🔔 0</button>
   <div class="status" id="status"><span class="dot"></span><span id="statusText">ยังไม่เชื่อมต่อ</span></div>
   <button id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙ ตั้งค่า</button>
 </div>
 <div id="grid"></div>
+<div id="toasts"></div>
 
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
@@ -39,8 +40,30 @@
   </form>
 </dialog>
 
+<dialog id="indDialog" class="wide">
+  <form method="dialog" id="indForm">
+    <h2>Indicators</h2>
+    <div id="indList" class="list"></div>
+    <div class="actions">
+      <select id="indAdd"></select>
+      <button type="button" id="indAddBtn">+ เพิ่ม</button>
+      <span class="spacer"></span>
+      <button type="button" id="cancelIndicators">ยกเลิก</button>
+      <button type="submit" class="on">ใช้งาน</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="alertsDialog" class="wide">
+  <h2>Alerts</h2>
+  <p class="hint">แจ้งเตือนด้วยเสียง + การแจ้งเตือนของเบราว์เซอร์ เมื่อราคาแตะเส้น (ต้องเปิดหน้านี้ไว้)</p>
+  <div id="alertsList" class="list"></div>
+  <div class="actions"><span class="spacer"></span><button type="button" id="closeAlerts">ปิด</button></div>
+</dialog>
+
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
 <script src="indicators.js"></script>
+<script src="drawings.js"></script>
 <script src="mt5.js"></script>
 <script src="app.js"></script>
 </body>

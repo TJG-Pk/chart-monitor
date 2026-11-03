@@ -35,7 +35,14 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
   แท่งวินาทีสร้างจาก tick ของ MT5 ใน bridge (MT5 ไม่มีแท่งต่ำกว่า 1 นาที)
 - Crosshair ซิงก์ทุกช่อง ถึงจะต่าง timeframe ก็ชี้แท่งที่ตรงกันให้
 - เลื่อนกราฟไปทางซ้ายแล้วโหลดข้อมูลย้อนหลังเพิ่มให้อัตโนมัติ
-- แท่งเทียน / Heikin Ashi, Volume (tick volume), Stochastic (14,1,3), RSI (14)
+- แท่งเทียน / Heikin Ashi, Volume (tick volume)
+- **Indicators** (ปุ่ม ƒx): SMA, EMA, Bollinger Bands, VWAP, RSI, Stochastic, MACD, ATR
+  เพิ่มได้หลายตัว ปรับค่าและสีได้
+- **เครื่องมือวาด**: เส้นเทรนด์, Ray, เส้นแนวนอน, เส้นแนวตั้ง, กล่อง, Fibonacci
+  บันทึกแยกตามสัญลักษณ์และแสดงตรงกันทุก timeframe คลิกเลือกแล้วลากย้าย / เปลี่ยนสี / ลบ (Delete) ได้ Esc = ยกเลิก
+- **Alert**: เลือกเส้นแนวนอนแล้วกด “🔔 ตั้ง alert” เตือนด้วยเสียง + การแจ้งเตือนของเบราว์เซอร์
+  เมื่อราคาแตะเส้น (ต้องเปิดหน้าไว้) ดูรายการทั้งหมดที่ปุ่ม 🔔
+- เส้น Ask, spread และเวลานับถอยหลังปิดแท่งบนหัวกราฟแต่ละช่อง
 - เวลาแสดงเป็นเวลาไทย (UTC+7) ไม่ว่าโบรกจะใช้เวลา server แบบไหน
 
 ## ไฟล์
@@ -47,7 +54,8 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
 | `index.html` | โครงหน้า และ dialog ตั้งค่า |
 | `app.js` | กราฟ, layout, ซิงก์ crosshair (ค่าที่แก้ได้อยู่บนสุดของไฟล์) |
 | `mt5.js` | ดึงข้อมูลจาก bridge |
-| `indicators.js` | สูตร RSI, Stochastic, Heikin Ashi |
+| `indicators.js` | สูตร indicator ทั้งหมด และรายการที่หน้า ƒx Indicators ใช้ |
+| `drawings.js` | เครื่องมือวาดเส้น (เก็บใน localStorage ของเบราว์เซอร์) |
 | `style.css` | หน้าตา |
 
 ยังไม่มีการส่งคำสั่งซื้อขาย จะต่อยอดผ่าน bridge ตัวเดียวกันภายหลัง
