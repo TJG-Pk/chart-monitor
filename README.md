@@ -71,6 +71,25 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
 | `indicators.js` | สูตร indicator ทั้งหมด และรายการที่หน้า ƒx Indicators ใช้ |
 | `drawings.js` | เครื่องมือวาดเส้น (เก็บใน localStorage ของเบราว์เซอร์) |
 | `overlays.js` | แถบ session และ Volume Profile |
+| `trading.js` | แผงเทรด, เส้น position/SL/TP บนกราฟ, Journal |
+| `bridge/trading.py` | ส่งคำสั่งเข้า MT5 พร้อมกฎความปลอดภัย (Demo เท่านั้น, จำกัดขาดทุน) |
 | `style.css` | หน้าตา |
 
-ยังไม่มีการส่งคำสั่งซื้อขาย จะต่อยอดผ่าน bridge ตัวเดียวกันภายหลัง
+## เทรด (💹)
+
+แผงเทรดอยู่ใต้ Watchlist: Buy/Sell แบบ Market / Limit / Stop พร้อม lot, SL, TP และแสดงเงินที่เสี่ยง/ได้
+position และ order แสดงบนกราฟ:
+
+- ลากเส้น SL / TP / ราคา order เพื่อแก้
+- ลากจากเส้นราคาเข้าของ position ขึ้น/ลง เพื่อตั้ง TP หรือ SL ใหม่
+- กด ✕ บนป้ายเพื่อปิด position / ยกเลิก order
+- 📒 Journal: เทรดที่ปิดแล้ว, win rate, profit factor, โน้ตต่อเทรด, ส่งออก CSV
+
+**ความปลอดภัย (บังคับที่ bridge ไม่ใช่ที่หน้าเว็บ)**
+
+- ส่งคำสั่งได้เฉพาะ **บัญชี Demo** ถ้า MT5 ล็อกอินบัญชีจริง ปุ่มจะถูกปิดและ bridge ปฏิเสธคำสั่ง
+  ถ้าต้องการเทรดบัญชีจริงจริงๆ ต้องเปิด bridge เองด้วย `start-bridge.bat --allow-real-trading`
+- ⚙ จำกัดความเสี่ยง: ขาดทุนสูงสุดต่อวัน (ปิดแล้ว + ที่ค้าง) และ lot สูงสุดต่อออเดอร์ — เกินแล้วเปิดออเดอร์ใหม่ไม่ได้ แต่ปิดได้เสมอ
+- ถามยืนยันทุกคำสั่ง (ปิดได้ในแผง)
+- รับคำสั่งเฉพาะจากหน้า Chart Monitor เอง เว็บอื่นส่งคำสั่งมาที่ bridge ไม่ได้
+- ต้องกดปุ่ม **Algo Trading** ใน MT5 ให้เปิดก่อน

@@ -13,6 +13,9 @@ Endpoints (all times are real UTC seconds; MT5 server time is converted):
     GET /api/candles?symbol=XAUUSD&tf=M1&count=500[&to=<utc seconds>]
     GET /api/profile?symbol=XAUUSD&from=<utc>&to=<utc>&rows=50 -> tick counts per price row
     GET /api/stream                      -> Server-Sent Events, one "tick" event per price change
+    GET /api/trading                     -> account, today's P/L, positions, pending orders
+    GET /api/history?days=30             -> closed trades (journal)
+    POST /api/order | modify | close | cancel | risk   (see trading.py; Demo accounts only by default)
 
 `symbol` is either an alias from SYMBOL_CANDIDATES (XAUUSD, NASDAQ) or any MT5 symbol name.
 Every symbol that has been asked for is streamed from then on.
@@ -32,6 +35,8 @@ from urllib.parse import parse_qs, urlparse
 
 import MetaTrader5 as mt5
 import numpy as np
+
+from trading import Trader, TradeError
 
 # ===== ตั้งค่า (แก้ตรงนี้ได้) =====
 # ชื่อที่หน้าเว็บใช้ -> ชื่อที่จะลองหาใน MT5 (หาแบบขึ้นต้นด้วย จึงเจอ XAUUSDm, XAUUSD.pro ด้วย)
@@ -168,7 +173,12 @@ class Bridge:
             if day_open is None:
                 day = mt5.copy_rates_from_pos(sym["name"], mt5.TIMEFRAME_D1, 0, 1)
                 day_open = float(day[0]["open"]) if day is not None and len(day) else None
-        return dict(sym, mt5=sym["name"], name=display, dayOpen=day_open)
+        contract = {} if live is None else {
+            "tickSize": live.trade_tick_size, "tickValue": live.trade_tick_value,
+            "volumeMin": live.volume_min, "volumeStep": live.volume_step, "volumeMax": live.volume_max,
+            "stopsLevel": live.trade_stops_level, "point": live.point,
+        }
+        return dict(sym, mt5=sym["name"], name=display, dayOpen=day_open, **contract)
 
     def ensure_connected(self):
         if self.connected:
@@ -359,19 +369,48 @@ class Handler(SimpleHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # keep the console readable
 
-    def cors(self):
+    def origin_allowed(self):
         origin = self.headers.get("Origin", "")
-        host = urlparse(origin).hostname or ""
-        if origin in ALLOWED_ORIGINS or host in ("localhost", "127.0.0.1"):
-            self.send_header("Access-Control-Allow-Origin", origin)
+        return origin in ALLOWED_ORIGINS or (urlparse(origin).hostname or "") in ("localhost", "127.0.0.1")
+
+    def cors(self):
+        if self.origin_allowed():
+            self.send_header("Access-Control-Allow-Origin", self.headers.get("Origin"))
             self.send_header("Vary", "Origin")
 
     def do_OPTIONS(self):
         self.send_response(204)
         self.cors()
-        self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Chart-Monitor")
         self.send_header("Access-Control-Allow-Private-Network", "true")
         self.end_headers()
+
+    def do_POST(self):
+        """Trading actions. Only accepted from the chart page itself: the Origin must be allowed
+        and the custom X-Chart-Monitor header must be present, which a plain cross-site form or
+        image request cannot send without passing the CORS preflight above."""
+        url = urlparse(self.path)
+        if not self.origin_allowed() or self.headers.get("X-Chart-Monitor") != "1":
+            return self.send_json(403, {"error": "forbidden"})
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(min(length, 10000)) or b"{}")
+        except ValueError:
+            return self.send_json(400, {"error": "bad request"})
+        trader = self.bridge.trader
+        actions = {"/api/order": trader.place, "/api/modify": trader.modify, "/api/close": trader.close,
+                   "/api/cancel": trader.cancel, "/api/risk": trader.set_risk}
+        if url.path not in actions:
+            return self.send_json(404, {"error": "not found"})
+        if not self.bridge.connected:
+            return self.send_json(503, {"error": self.bridge.error})
+        try:
+            result = actions[url.path](body)
+        except (TradeError, ValueError, TypeError) as e:
+            return self.send_json(400, {"error": str(e)})
+        print("[trade] %s %s -> %s" % (url.path, json.dumps(body, ensure_ascii=False), json.dumps(result, ensure_ascii=False)))
+        return self.send_json(200, result)
 
     def send_json(self, status, payload):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -422,6 +461,13 @@ class Handler(SimpleHTTPRequestHandler):
                                                      q.get("rows", 50)))
             except (LookupError, ValueError) as e:
                 return self.send_json(400, {"error": str(e)})
+        if url.path == "/api/trading":
+            try:
+                return self.send_json(200, b.trader.snapshot())
+            except TradeError as e:
+                return self.send_json(400, {"error": str(e)})
+        if url.path == "/api/history":
+            return self.send_json(200, b.trader.history(q.get("days", 30)))
         if url.path == "/api/stream":
             return self.stream()
         return self.send_json(404, {"error": "not found"})
@@ -461,6 +507,8 @@ def main():
     p.add_argument("--symbol", action="append", default=[], metavar="NAME=MT5NAME",
                    help="กำหนดชื่อสัญลักษณ์เอง เช่น --symbol XAUUSD=XAUUSDm")
     p.add_argument("--no-browser", action="store_true", help="ไม่ต้องเปิดเบราว์เซอร์อัตโนมัติ")
+    p.add_argument("--allow-real-trading", action="store_true",
+                   help="อนุญาตให้ส่งคำสั่งเข้าบัญชีจริง (ค่าเริ่มต้น: ส่งได้เฉพาะบัญชี Demo)")
     p.add_argument("--utc-offset", type=float, metavar="HOURS",
                    help="เวลา server ของโบรกห่างจาก UTC กี่ชั่วโมง (ปกติหาเองอัตโนมัติ)")
     args = p.parse_args()
@@ -481,6 +529,9 @@ def main():
     server.daemon_threads = True
 
     bridge = Bridge(args.terminal, overrides)
+    bridge.trader = Trader(bridge, mt5_lock, allow_real=args.allow_real_trading)
+    if args.allow_real_trading:
+        print("⚠ เปิดให้ส่งคำสั่งเข้าบัญชีจริงได้ (--allow-real-trading)")
     if args.utc_offset is not None:
         bridge.utc_offset = int(args.utc_offset * 3600)
         bridge.fixed_offset = True

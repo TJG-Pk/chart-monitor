@@ -24,14 +24,18 @@
   <button id="openAlerts" title="รายการ alert">🔔 0</button>
   <div class="status" id="status"><span class="dot"></span><span id="statusText">ยังไม่เชื่อมต่อ</span></div>
   <button id="toggleWatchlist" title="แสดง / ซ่อน Watchlist (Alt+W)">☰ Watchlist</button>
+  <button id="toggleTrade" title="แสดง / ซ่อนแผงเทรด">💹 เทรด</button>
   <button id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙</button>
 </div>
 <div id="main">
   <div id="grid"></div>
   <aside id="watchlist">
-    <div class="whead"><b>Watchlist</b><button id="addWatch" title="เพิ่มสัญลักษณ์">+ เพิ่ม</button></div>
-    <div class="wcols"><span>สัญลักษณ์</span><span>ราคา</span><span>วันนี้</span><span>spread</span></div>
-    <div id="watchRows"></div>
+    <section id="watchSection">
+      <div class="whead"><b>Watchlist</b><button id="addWatch" title="เพิ่มสัญลักษณ์">+ เพิ่ม</button></div>
+      <div class="wcols"><span>สัญลักษณ์</span><span>ราคา</span><span>วันนี้</span><span>spread</span></div>
+      <div id="watchRows"></div>
+    </section>
+    <section id="tradePanel"></section>
   </aside>
 </div>
 <div id="toasts"></div>
@@ -80,10 +84,40 @@
   <div class="actions"><span class="spacer"></span><button type="button" id="closeAlerts">ปิด</button></div>
 </dialog>
 
+<dialog id="riskDialog">
+  <form method="dialog" id="riskForm">
+    <h2>จำกัดความเสี่ยง</h2>
+    <p class="hint">bridge เป็นผู้บังคับใช้ ถึงหน้าเว็บจะส่งคำสั่งมาก็จะถูกปฏิเสธ (การปิด position ทำได้เสมอ)</p>
+    <label class="field">ขาดทุนสูงสุดต่อวัน (สกุลเงินบัญชี, 0 = ไม่จำกัด)
+      <input type="number" id="riskLoss" min="0" step="1">
+    </label>
+    <label class="field">Lot สูงสุดต่อออเดอร์ (0 = ไม่จำกัด)
+      <input type="number" id="riskVolume" min="0" step="0.01">
+    </label>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button type="button" id="cancelRisk">ยกเลิก</button>
+      <button type="submit" class="on">บันทึก</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="journalDialog" class="xwide">
+  <div class="actions" style="margin-top:0">
+    <h2 style="margin:0">Journal</h2><span class="spacer"></span>
+    <select id="journalDays"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option><option value="365">1 ปี</option></select>
+    <button type="button" id="journalCsv">⬇ CSV</button>
+  </div>
+  <div id="journalSummary" class="journal-summary"></div>
+  <div id="journalBody" class="journal-body"></div>
+  <div class="actions"><span class="spacer"></span><button type="button" id="closeJournal">ปิด</button></div>
+</dialog>
+
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
 <script src="indicators.js"></script>
 <script src="drawings.js"></script>
 <script src="overlays.js"></script>
+<script src="trading.js"></script>
 <script src="mt5.js"></script>
 <script src="app.js"></script>
 </body>

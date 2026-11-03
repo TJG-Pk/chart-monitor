@@ -32,6 +32,7 @@ const DEFAULT_STATE = {
   layout: "2x2", style: "candles", scale: "normal",
   link: true,                    // เปลี่ยนสัญลักษณ์ทีเดียวทุกช่อง
   showWatchlist: true,
+  showTrade: false,
   watchlist: DEFAULT_WATCHLIST,
   overlays: { sessions: true, levels: true, profile: false },
   indicators: [{ id: "stoch", type: "stoch", params: {} }, { id: "rsi", type: "rsi", params: {} }],
@@ -288,6 +289,7 @@ class ChartCell {
     this.askLine = null;
     this.levelLines = {};
     this.overlays = new OverlayLayer(this);
+    this.trades = new TradeLayer(this);           // before drawings: its mouse handlers go first
     this.drawings = new DrawingLayer(this, UI);
     chart.subscribeClick(p => this.onChartClick(p));
   }
@@ -701,6 +703,7 @@ class ChartCell {
     if (this.overlays) { this.overlays.destroy(); this.overlays = null; }
     this.dayLevels = null;
     if (this.drawings) { this.drawings.destroy(); this.drawings = null; }
+    if (this.trades) { this.trades.destroy(); this.trades = null; }
     clearInterval(this.resyncTimer);
     if (this.frame) cancelAnimationFrame(this.frame);
     this.frame = 0;
@@ -743,6 +746,7 @@ function onPrice(p) {
   if (prev) checkAlerts(p.symbol, prev.price, p.price);
   for (const c of cells) if (c.symbol === p.symbol) c.onPrice(p);
   updateWatchRow(p.symbol);
+  if (p.symbol === activeSymbol()) TradePanel.onTick();
   const t = p.time + TZ_SHIFT;
   statusText.textContent = "เชื่อมต่อ MT5 แล้ว · " + fmtTime(t) + ":" + String(Math.floor(t) % 60).padStart(2, "0");
 }
@@ -884,6 +888,7 @@ async function connect() {
   renderGrid();
   renderWatchlist();
   refreshWatchInfo();
+  Trading.start();
   stream = Mt5.streamTicks(onPrice, setStatus);
 }
 
@@ -1061,8 +1066,12 @@ document.getElementById("closeSearch").addEventListener("click", () => searchDlg
 const watchEl = document.getElementById("watchlist");
 
 function renderWatchlist() {
-  document.body.classList.toggle("with-watchlist", state.showWatchlist);
+  document.body.classList.toggle("show-watch", state.showWatchlist);
+  document.body.classList.toggle("show-trade", state.showTrade);
+  document.body.classList.toggle("with-watchlist", state.showWatchlist || state.showTrade);
   document.getElementById("toggleWatchlist").classList.toggle("on", state.showWatchlist);
+  document.getElementById("toggleTrade").classList.toggle("on", state.showTrade);
+  TradePanel.render();
   const body = document.getElementById("watchRows");
   body.innerHTML = "";
   for (const symbol of state.watchlist) {
@@ -1120,6 +1129,11 @@ document.getElementById("toggleWatchlist").addEventListener("click", () => {
   state.showWatchlist = !state.showWatchlist;
   save(); renderWatchlist();
 });
+document.getElementById("toggleTrade").addEventListener("click", () => {
+  state.showTrade = !state.showTrade;
+  save(); renderWatchlist();
+});
+TradePanel.init();
 
 // ---------- drawing tools ----------
 let activeTool = "cursor";
