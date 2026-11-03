@@ -49,6 +49,12 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
 - ประเภทกราฟ: แท่งเทียน, แท่งเทียนกลวง, Bar, Heikin Ashi, Line, Area และสเกล Log / %
 - **บันทึก layout** (💾) เปิดชุดกราฟที่ตั้งไว้กลับมาได้ทันที
 - ขยายช่องเต็มจอ (⤢ / ดับเบิลคลิกหัวกราฟ / Alt+Enter), บันทึกรูปกราฟ (📷 / Alt+S)
+- **Sessions**: แถบสีช่วงตลาด Tokyo / London / New York (ปรับเวลา daylight saving ให้เอง) บนกราฟไม่เกิน 1h
+- **H/L**: High/Low วันนี้ (ขยับตามราคาสด) และของเมื่อวาน (PDH/PDL) จากแท่ง D1 ของโบรก
+- **VP (Volume Profile)** ของช่วงที่มองเห็น พร้อม POC และ Value Area 70%
+  นับจาก tick จริงของ MT5 เมื่อช่วงไม่เกิน 1 วัน ถ้ายาวกว่านั้นคำนวณจากแท่ง
+- **⏪ Replay**: คลิกแท่งเริ่มต้น แล้วเล่นทีละแท่ง (▶ / ⏭ / Shift+→, 1–10 แท่งต่อวินาที)
+  ระหว่าง replay ซ่อนเส้น H/L และ Ask ไม่ให้เห็นราคาอนาคต
 - คีย์ลัด: Alt+T เทรนด์, Alt+R ray, Alt+H แนวนอน, Alt+V แนวตั้ง, Alt+B กล่อง, Alt+F Fib,
   Ctrl+Z ย้อนการวาด, Delete ลบเส้นที่เลือก, Esc ยกเลิก
 - เวลาแสดงเป็นเวลาไทย (UTC+7) ไม่ว่าโบรกจะใช้เวลา server แบบไหน
@@ -64,6 +70,7 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
 | `mt5.js` | ดึงข้อมูลจาก bridge |
 | `indicators.js` | สูตร indicator ทั้งหมด และรายการที่หน้า ƒx Indicators ใช้ |
 | `drawings.js` | เครื่องมือวาดเส้น (เก็บใน localStorage ของเบราว์เซอร์) |
+| `overlays.js` | แถบ session และ Volume Profile |
 | `style.css` | หน้าตา |
 
 ยังไม่มีการส่งคำสั่งซื้อขาย จะต่อยอดผ่าน bridge ตัวเดียวกันภายหลัง
