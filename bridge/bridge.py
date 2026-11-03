@@ -19,6 +19,7 @@ import os
 import queue
 import threading
 import time
+import webbrowser
 from datetime import datetime, timezone
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -295,18 +296,38 @@ class Handler(SimpleHTTPRequestHandler):
             self.bridge.remove_listener(q)
 
 
+class Server(ThreadingHTTPServer):
+    # HTTPServer sets SO_REUSEADDR, which on Windows lets a second bridge bind the same
+    # port silently. Turn it off so a second launch fails to bind and says so instead.
+    allow_reuse_address = False
+
+
 def main():
     p = argparse.ArgumentParser(description="MT5 -> Chart Monitor bridge")
     p.add_argument("--port", type=int, default=PORT)
     p.add_argument("--terminal", help="path to terminal64.exe (ถ้ามี MT5 หลายตัว)")
     p.add_argument("--symbol", action="append", default=[], metavar="NAME=MT5NAME",
                    help="กำหนดชื่อสัญลักษณ์เอง เช่น --symbol XAUUSD=XAUUSDm")
+    p.add_argument("--no-browser", action="store_true", help="ไม่ต้องเปิดเบราว์เซอร์อัตโนมัติ")
     p.add_argument("--utc-offset", type=float, metavar="HOURS",
                    help="เวลา server ของโบรกห่างจาก UTC กี่ชั่วโมง (ปกติหาเองอัตโนมัติ)")
     args = p.parse_args()
     overrides = dict(s.split("=", 1) for s in args.symbol if "=" in s)
 
     mimetypes.add_type("text/javascript", ".js")
+    url = "http://localhost:%d" % args.port
+
+    # Bind first: if the port is taken, a bridge is most likely already running.
+    try:
+        server = Server(("127.0.0.1", args.port), Handler)
+    except OSError:
+        print("พอร์ต %d ถูกใช้อยู่ — น่าจะเปิด bridge ไว้แล้วในอีกหน้าต่างหนึ่ง" % args.port)
+        print("กำลังเปิด %s ให้" % url)
+        if not args.no_browser:
+            webbrowser.open(url)
+        return
+    server.daemon_threads = True
+
     bridge = Bridge(args.terminal, overrides)
     if args.utc_offset is not None:
         bridge.utc_offset = int(args.utc_offset * 3600)
@@ -317,9 +338,10 @@ def main():
     threading.Thread(target=bridge.tick_loop, daemon=True).start()
 
     Handler.bridge = bridge
-    server = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
-    server.daemon_threads = True
-    print("เปิดกราฟที่ http://localhost:%d  (กด Ctrl+C เพื่อปิด)" % args.port)
+    print("เปิดกราฟที่ %s  (ปิดหน้าต่างนี้หรือกด Ctrl+C เพื่อหยุด)" % url)
+    if not args.no_browser:
+        # The socket is already listening, so the page loads instead of "can't be reached".
+        threading.Timer(0.3, webbrowser.open, [url]).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
