@@ -11,6 +11,7 @@ Endpoints (all times are real UTC seconds; MT5 server time is converted):
     GET /api/search?q=eur                -> [{"name", "description", "path", "digits"}, ...]
     GET /api/info?symbol=EURUSD          -> {"name", "digits", "description", "dayOpen"}
     GET /api/candles?symbol=XAUUSD&tf=M1&count=500[&to=<utc seconds>]
+    GET /api/profile?symbol=XAUUSD&from=<utc>&to=<utc>&rows=50 -> tick counts per price row
     GET /api/stream                      -> Server-Sent Events, one "tick" event per price change
 
 `symbol` is either an alias from SYMBOL_CANDIDATES (XAUUSD, NASDAQ) or any MT5 symbol name.
@@ -54,6 +55,7 @@ TIMEFRAMES = {
 SECOND_TIMEFRAMES = {"S10": 10, "S15": 15, "S30": 30}
 MAX_COUNT = 5000
 MAX_TICK_LOOKBACK = 4 * 86400  # seconds bars: look back at most 4 days of ticks (covers a weekend)
+MAX_PROFILE_SPAN = 86400       # volume profile from ticks: at most 1 day (the page falls back to bars)
 
 # The MetaTrader5 module is not documented as thread-safe; every call goes through this lock.
 mt5_lock = threading.Lock()
@@ -249,6 +251,27 @@ class Bridge:
             b["time"] -= off
         return bars[-count:]
 
+    def profile(self, display, from_utc, to_utc, rows):
+        """Tick count per price row between two UTC times: a volume profile built from every
+        bid tick rather than from bar ranges."""
+        sym = self.resolve(display)
+        if not sym:
+            raise LookupError("ไม่พบสัญลักษณ์ %s ใน MT5" % display)
+        start, end, rows = int(from_utc), int(to_utc), max(5, min(int(rows), 200))
+        if end <= start or end - start > MAX_PROFILE_SPAN:
+            raise ValueError("ช่วงเวลาต้องไม่เกิน %d ชั่วโมง" % (MAX_PROFILE_SPAN // 3600))
+        off = self.offset()
+        with mt5_lock:
+            ticks = mt5.copy_ticks_range(sym["name"], start + off, end + off, mt5.COPY_TICKS_INFO)
+        if ticks is None or not len(ticks):
+            return {"low": None, "high": None, "counts": [], "ticks": 0}
+        bid = ticks["bid"][ticks["bid"] > 0]
+        if not len(bid):
+            return {"low": None, "high": None, "counts": [], "ticks": 0}
+        low, high = float(bid.min()), float(bid.max())
+        counts, _ = np.histogram(bid, bins=rows, range=(low, high if high > low else low + 1e-9))
+        return {"low": low, "high": high, "counts": counts.tolist(), "ticks": int(len(bid))}
+
     # ---------- live ticks ----------
     def add_listener(self, q):
         with self.listeners_lock:
@@ -393,6 +416,12 @@ class Handler(SimpleHTTPRequestHandler):
             except (LookupError, ValueError) as e:
                 return self.send_json(400, {"error": str(e)})
             return self.send_json(200, bars)
+        if url.path == "/api/profile":
+            try:
+                return self.send_json(200, b.profile(q.get("symbol", ""), q.get("from", 0), q.get("to", 0),
+                                                     q.get("rows", 50)))
+            except (LookupError, ValueError) as e:
+                return self.send_json(400, {"error": str(e)})
         if url.path == "/api/stream":
             return self.stream()
         return self.send_json(404, {"error": "not found"})

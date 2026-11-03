@@ -81,6 +81,11 @@ body.with-watchlist #watchlist { display:flex; }
 .cell header .countdown + .spread { margin-left:auto; }
 .cell header .last { margin-left:8px; }
 
+.replaybar { position:absolute; left:50%; bottom:36px; transform:translateX(-50%); z-index:5;
+  display:flex; gap:6px; align-items:center; padding:6px 8px; background:rgba(22,26,32,.95);
+  border:1px solid var(--accent); border-radius:8px; font-size:12px; white-space:nowrap; }
+.replaybar button, .replaybar select { padding:3px 8px; font-size:12px; }
+
 #toasts { position:fixed; right:16px; bottom:16px; z-index:20; display:flex; flex-direction:column; gap:8px; }
 .toast { background:var(--panel); border:1px solid var(--warn); color:var(--text); border-radius:8px;
   padding:10px 14px; box-shadow:0 6px 20px rgba(0,0,0,.4); cursor:pointer; max-width:360px; }

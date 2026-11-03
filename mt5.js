@@ -21,6 +21,8 @@ const Mt5 = (() => {
   const symbols = () => get("/api/symbols");
   const info = symbol => get("/api/info?symbol=" + encodeURIComponent(symbol));
   const search = text => get("/api/search?q=" + encodeURIComponent(text));
+  const profile = (symbol, from, to, rows) =>
+    get(`/api/profile?symbol=${encodeURIComponent(symbol)}&from=${Math.floor(from)}&to=${Math.ceil(to)}&rows=${rows}`);
 
   // Bars oldest first, times in UTC seconds. `to` loads history before that time.
   function candles(symbol, tf, { count = 500, to } = {}) {
@@ -51,5 +53,5 @@ const Mt5 = (() => {
     return { stop() { stopped = true; clearTimeout(timer); if (es) es.close(); } };
   }
 
-  return { configure, status, symbols, info, search, candles, streamTicks };
+  return { configure, status, symbols, info, search, profile, candles, streamTicks };
 })();

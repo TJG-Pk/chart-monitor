@@ -33,6 +33,7 @@ const DEFAULT_STATE = {
   link: true,                    // เปลี่ยนสัญลักษณ์ทีเดียวทุกช่อง
   showWatchlist: true,
   watchlist: DEFAULT_WATCHLIST,
+  overlays: { sessions: true, levels: true, profile: false },
   indicators: [{ id: "stoch", type: "stoch", params: {} }, { id: "rsi", type: "rsi", params: {} }],
   cells: ["1", "5", "15", "60"].map(interval => ({ symbol: "XAUUSD", interval }))
 };
@@ -81,6 +82,7 @@ function normalizeState(s) {
   }
   s.indicators = s.indicators.filter(x => INDICATOR_DEFS[x.type]);
   if (!Array.isArray(s.watchlist)) s.watchlist = DEFAULT_WATCHLIST.slice();
+  s.overlays = Object.assign({}, DEFAULT_STATE.overlays, s.overlays);
   delete s.symbol; delete s.intervals; delete s.stoch; delete s.rsi;
   return s;
 }
@@ -284,7 +286,149 @@ class ChartCell {
     });
     this.chart = chart;
     this.askLine = null;
+    this.levelLines = {};
+    this.overlays = new OverlayLayer(this);
     this.drawings = new DrawingLayer(this, UI);
+    chart.subscribeClick(p => this.onChartClick(p));
+  }
+
+  // ---------- day high / low ----------
+  // Today's and yesterday's high/low from MT5's D1 bars (the broker's trading day), shown on
+  // intraday charts. Today's pair follows live ticks.
+  async loadLevels() {
+    if (!state.overlays.levels || this.iv.seconds >= 86400) { this.showLevels(); return; }
+    try {
+      const d = await Mt5.candles(this.symbol, "D1", { count: 2 });
+      if (this.dead || !this.chart || d.length < 2) return;
+      this.dayLevels = { pdh: d[0].high, pdl: d[0].low, h: d[1].high, l: d[1].low };
+      this.showLevels();
+    } catch (e) { /* levels are optional */ }
+  }
+
+  showLevels() {
+    const LW = LightweightCharts;
+    // Hidden during replay: today's high/low would give away where price goes next.
+    const want = state.overlays.levels && this.iv.seconds < 86400 && this.dayLevels && !this.replay ? this.dayLevels : {};
+    const style = {
+      h:   { title: "H วันนี้", color: "#26a69a", lineStyle: LW.LineStyle.Solid },
+      l:   { title: "L วันนี้", color: "#ef5350", lineStyle: LW.LineStyle.Solid },
+      pdh: { title: "PDH", color: "#7d8590", lineStyle: LW.LineStyle.Dashed },
+      pdl: { title: "PDL", color: "#7d8590", lineStyle: LW.LineStyle.Dashed }
+    };
+    for (const key of Object.keys(style)) {
+      const line = this.levelLines[key];
+      if (want[key] === undefined) {
+        if (line) { this.candle.removePriceLine(line); delete this.levelLines[key]; }
+      } else if (line) {
+        line.applyOptions({ price: want[key] });
+      } else {
+        this.levelLines[key] = this.candle.createPriceLine(Object.assign({ price: want[key], lineWidth: 1,
+          axisLabelVisible: true }, style[key]));
+      }
+    }
+  }
+
+  // ---------- bar replay ----------
+  // replay = { picking: true } while waiting for the start bar, then { idx, timer, speed }.
+  // Live ticks keep updating this.bars; only bars up to idx are shown.
+  viewBars() {
+    return this.replay && this.replay.idx !== undefined ? this.bars.slice(0, this.replay.idx + 1) : this.bars;
+  }
+
+  startReplayPick() {
+    this.stopReplay(false);
+    this.replay = { picking: true };
+    this.showReplayBar();
+  }
+
+  onChartClick(p) {
+    if (!this.replay || !this.replay.picking || p.time === undefined) return;
+    let idx = this.barIndexAt(p.time);
+    if (idx < 0) return;
+    idx = Math.max(idx, 20);                      // keep some bars for indicators to warm up
+    this.replay = { idx, timer: 0, speed: this.replay.speed || 1 };
+    if (this.askLine) { this.candle.removePriceLine(this.askLine); this.askLine = null; }
+    this.spreadEl.textContent = "";
+    this.showLevels();
+    this.render(true);
+    this.chart.timeScale().scrollToPosition(5, false);
+    this.showReplayBar();
+  }
+
+  replayStep() {
+    const r = this.replay;
+    if (!r || r.idx === undefined) return;
+    if (r.idx >= this.bars.length - 1) { this.replayPause(); return; }
+    r.idx++;
+    this.render(false);
+    this.showReplayBar();
+  }
+
+  replayPlay() {
+    const r = this.replay;
+    if (!r || r.idx === undefined) return;
+    clearInterval(r.timer);
+    r.timer = setInterval(() => this.replayStep(), 1000 / r.speed);
+    this.showReplayBar();
+  }
+
+  replayPause() {
+    if (!this.replay) return;
+    clearInterval(this.replay.timer);
+    this.replay.timer = 0;
+    this.showReplayBar();
+  }
+
+  stopReplay(redraw = true) {
+    if (!this.replay) return;
+    clearInterval(this.replay.timer);
+    this.replay = null;
+    if (this.replayBar) { this.replayBar.remove(); this.replayBar = null; }
+    if (redraw) { this.render(true); this.showLevels(); this.chart.timeScale().scrollToRealTime(); }
+    renderOverlayButtons();
+  }
+
+  showReplayBar() {
+    const r = this.replay;
+    if (!this.replayBar) {
+      this.replayBar = document.createElement("div");
+      this.replayBar.className = "replaybar";
+      this.chartEl.appendChild(this.replayBar);
+    }
+    const bar = this.replayBar;
+    bar.innerHTML = "";
+    const btn = (text, title, fn, on) => {
+      const b = document.createElement("button");
+      b.textContent = text; b.title = title;
+      if (on) b.className = "on";
+      b.addEventListener("click", fn);
+      bar.appendChild(b);
+      return b;
+    };
+    if (r.picking) {
+      const hint = document.createElement("span");
+      hint.textContent = "คลิกที่แท่งที่จะเริ่ม replay";
+      bar.appendChild(hint);
+    } else {
+      const playing = !!r.timer;
+      btn(playing ? "⏸" : "▶", playing ? "หยุด" : "เล่น", () => playing ? this.replayPause() : this.replayPlay());
+      btn("⏭", "ไปแท่งถัดไป (Shift+→)", () => this.replayStep());
+      const speed = document.createElement("select");
+      for (const s of [1, 2, 5, 10]) {
+        const o = document.createElement("option");
+        o.value = s; o.textContent = s + " แท่ง/วิ";
+        speed.appendChild(o);
+      }
+      speed.value = r.speed;
+      speed.addEventListener("change", () => { r.speed = +speed.value; if (r.timer) this.replayPlay(); });
+      bar.appendChild(speed);
+      const pos = document.createElement("span");
+      const b = this.bars[r.idx];
+      pos.textContent = `${fmtDate(b.time)} ${this.iv.seconds < 86400 ? fmtTime(b.time) : ""} · เหลือ ${this.bars.length - 1 - r.idx} แท่ง`;
+      bar.appendChild(pos);
+    }
+    btn("ออก", "ออกจาก replay", () => this.stopReplay());
+    renderOverlayButtons();
   }
 
   // Drawings are stored by time, so they line up across timeframes: a time between two bars
@@ -346,7 +490,8 @@ class ChartCell {
       if (!this.bars.length) { this.showOverlay("ไม่มีข้อมูลสำหรับสัญลักษณ์นี้", true); return; }
       this.overlay.hidden = true;
       this.render(true);
-      this.resyncTimer = setInterval(() => this.resync(), RESYNC_MS);
+      this.loadLevels();
+      this.resyncTimer = setInterval(() => { this.resync(); this.loadLevels(); }, RESYNC_MS);
     } catch (e) {
       if (this.dead || gen !== this.chart) return;
       this.showOverlay("โหลดข้อมูลไม่สำเร็จ: " + e.message, true);
@@ -370,6 +515,12 @@ class ChartCell {
       this.bars.push({ time, open: p.price, high: p.price, low: p.price, close: p.price, volume: 1 });
     }
     this.quote = p;
+    if (this.replay) return;                      // keep the replay view frozen
+    const lv = this.dayLevels;
+    if (lv && (p.price > lv.h || p.price < lv.l)) {
+      lv.h = Math.max(lv.h, p.price); lv.l = Math.min(lv.l, p.price);
+      this.showLevels();
+    }
     if (!this.frame) this.frame = requestAnimationFrame(() => { this.frame = 0; this.render(false); });
   }
 
@@ -389,7 +540,7 @@ class ChartCell {
   // Seconds left in the current bar, shown in the header.
   updateCountdown(nowSec) {
     const last = this.bars[this.bars.length - 1];
-    if (!last) { this.countdownEl.textContent = ""; return; }
+    if (!last || this.replay) { this.countdownEl.textContent = ""; return; }
     const left = Math.floor(last.time + this.iv.seconds - (nowSec + TZ_SHIFT));
     if (left < 0) { this.countdownEl.textContent = ""; return; }     // market closed / no ticks yet
     const h = Math.floor(left / 3600), m = Math.floor(left / 60) % 60, s = left % 60;
@@ -426,6 +577,7 @@ class ChartCell {
       if (this.dead || gen !== this.chart) return;
       if (!older.length) { this.noMoreHistory = true; return; }
       this.bars = older.concat(this.bars);
+      if (this.replay && this.replay.idx !== undefined) this.replay.idx += older.length;
       this.render(true);
     } catch (e) {
       this.noMoreHistory = true;
@@ -436,7 +588,8 @@ class ChartCell {
 
   render(full) {
     if (!this.chart || !this.bars.length) return;
-    const disp = state.style === "ha" ? Indicators.heikinAshi(this.bars) : this.bars;
+    const bars = this.viewBars();
+    const disp = state.style === "ha" ? Indicators.heikinAshi(bars) : bars;
     this.disp = disp;
     const ohlc = state.style === "line" || state.style === "area"
       ? b => ({ time: b.time, value: b.close })
@@ -447,7 +600,7 @@ class ChartCell {
       o.downColor ? { time: disp[i].time, value: v, color: v >= 0 ? o.color : o.downColor } : { time: disp[i].time, value: v };
     const outputs = [];
     for (const x of this.ind) {
-      const values = x.def.compute(this.bars, x.params);
+      const values = x.def.compute(bars, x.params);
       x.def.outputs.forEach((o, k) => outputs.push([x.series[k], values[k], o]));
     }
 
@@ -455,16 +608,17 @@ class ChartCell {
       this.candle.setData(disp.map(ohlc));
       this.volume.setData(disp.map(vol));
       for (const [series, values, o] of outputs) series.setData(values.map((v, i) => point(v, i, o)));
+      this.overlays.scheduleProfile();
     } else {
       const i = disp.length - 1;
       this.candle.update(ohlc(disp[i]));
       this.volume.update(vol(disp[i]));
       for (const [series, values, o] of outputs) series.update(point(values[i], i, o));
     }
-    this.showQuote();
+    if (!this.replay) this.showQuote();
 
-    const last = this.bars[this.bars.length - 1];
-    const prev = this.bars[this.bars.length - 2];
+    const last = bars[bars.length - 1];
+    const prev = bars[bars.length - 2];
     this.lastEl.textContent = last.close.toFixed(this.precision);
     this.lastEl.className = "last " + (prev && last.close < prev.close ? "down" : "up");
     if (!this.hovering && this.following < 0) this.showLegend(disp.length - 1);
@@ -542,6 +696,10 @@ class ChartCell {
   }
 
   destroyChart() {
+    if (this.replay) { clearInterval(this.replay.timer); this.replay = null; }
+    if (this.replayBar) { this.replayBar.remove(); this.replayBar = null; }
+    if (this.overlays) { this.overlays.destroy(); this.overlays = null; }
+    this.dayLevels = null;
     if (this.drawings) { this.drawings.destroy(); this.drawings = null; }
     clearInterval(this.resyncTimer);
     if (this.frame) cancelAnimationFrame(this.frame);
@@ -652,6 +810,7 @@ function setActiveCell(i) {
   renderSymbolBar();
   renderDrawToolbar();
   renderWatchlist();
+  renderOverlayButtons();
 }
 
 function toggleMaximize(i) {
@@ -775,6 +934,43 @@ fillSelect(document.getElementById("scale"), SCALES, state.scale, v => {
   save();
   for (const c of cells) if (c.chart) c.chart.priceScale("right").applyOptions({ mode: { normal: 0, log: 1, percent: 2 }[v] });
 });
+
+// ---------- overlays & replay ----------
+function renderOverlayButtons() {
+  const box = document.getElementById("overlayBtns");
+  if (!box) return;
+  box.innerHTML = "";
+  const toggle = (key, label, title, after) => {
+    const b = document.createElement("button");
+    b.textContent = label;
+    b.title = title;
+    b.className = state.overlays[key] ? "on" : "";
+    b.addEventListener("click", () => {
+      state.overlays[key] = !state.overlays[key];
+      save();
+      for (const c of cells) if (c.chart) after(c);
+      renderOverlayButtons();
+    });
+    box.appendChild(b);
+  };
+  toggle("sessions", "Sessions", "แถบสีช่วงตลาด Tokyo / London / New York (กราฟไม่เกิน 1h)", c => c.overlays.update());
+  toggle("levels", "H/L", "High/Low วันนี้ และของเมื่อวาน (PDH/PDL)", c => c.loadLevels());
+  toggle("profile", "VP", "Volume Profile ของช่วงที่มองเห็น (จาก tick เมื่อช่วงไม่เกิน 1 วัน)", c => {
+    c.overlays.profileKey = "";
+    if (state.overlays.profile) c.overlays.scheduleProfile(); else c.overlays.update();
+  });
+  const cell = cells[activeCell];
+  const r = document.createElement("button");
+  r.textContent = "⏪ Replay";
+  r.title = "เล่นกราฟย้อนหลังทีละแท่งในช่องที่เลือก";
+  r.className = cell && cell.replay ? "on" : "";
+  r.addEventListener("click", () => {
+    const c = cells[activeCell];
+    if (!c || !c.chart) return;
+    if (c.replay) c.stopReplay(); else c.startReplayPick();
+  });
+  box.appendChild(r);
+}
 
 // ---------- saved layouts ----------
 // A saved layout is a snapshot of everything on screen except drawings (those stay per symbol).
@@ -1038,6 +1234,8 @@ document.addEventListener("keydown", (e) => {
   if (e.altKey && key === "s") { e.preventDefault(); if (cells[activeCell]) cells[activeCell].screenshot(); return; }
   if (e.altKey && key === "w") { e.preventDefault(); document.getElementById("toggleWatchlist").click(); return; }
   if (e.altKey && key === "enter") { e.preventDefault(); toggleMaximize(activeCell); return; }
+  const cell = cells[activeCell];
+  if (e.shiftKey && e.key === "ArrowRight" && cell && cell.replay) { e.preventDefault(); cell.replayStep(); return; }
   // Type a symbol name (like TradingView): any letter opens the search with it filled in.
   if (!e.altKey && !e.ctrlKey && !e.metaKey && /^[a-z]$/i.test(e.key)) {
     e.preventDefault();
@@ -1235,6 +1433,7 @@ setInterval(() => {
 }, 1000);
 
 renderSymbolBar();
+renderOverlayButtons();
 renderSavedLayouts();
 renderWatchlist();
 renderDrawToolbar();
