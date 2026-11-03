@@ -25,11 +25,26 @@ const Drawings = (() => {
   function notify(symbol) { for (const fn of listeners) fn(symbol); }
 
   // Undo history: a snapshot of every symbol's drawings before each change.
-  const history = [];
+  const history = [], future = [];
   function checkpoint() {
     history.push(JSON.stringify(store));
     if (history.length > 50) history.shift();
+    future.length = 0;
   }
+  function restore(from, to) {
+    if (!from.length) return false;
+    const before = store;
+    to.push(JSON.stringify(store));
+    store = JSON.parse(from.pop());
+    persist();
+    for (const symbol of new Set([...Object.keys(before), ...Object.keys(store)])) notify(symbol);
+    return true;
+  }
+
+  // magnet: snap points to the bar's open/high/low/close; locked: no dragging; hidden: not drawn.
+  const MODES_KEY = "chartMonitorDrawModes";
+  let modes = { magnet: false, locked: false, hidden: false };
+  try { modes = Object.assign(modes, JSON.parse(localStorage.getItem(MODES_KEY) || "{}")); } catch (e) {}
 
   let seq = 0;
   function make(type, p1, p2) {
@@ -44,13 +59,14 @@ const Drawings = (() => {
     get: (symbol, id) => (store[symbol] || []).find(d => d.id === id),
     checkpoint,
     canUndo: () => history.length > 0,
-    undo() {
-      if (!history.length) return false;
-      const before = store;
-      store = JSON.parse(history.pop());
-      persist();
-      for (const symbol of new Set([...Object.keys(before), ...Object.keys(store)])) notify(symbol);
-      return true;
+    canRedo: () => future.length > 0,
+    undo: () => restore(history, future),
+    redo: () => restore(future, history),
+    get modes() { return modes; },
+    setMode(key, value) {
+      modes[key] = value;
+      try { localStorage.setItem(MODES_KEY, JSON.stringify(modes)); } catch (e) {}
+      for (const symbol of Object.keys(store)) notify(symbol);
     },
     add(symbol, d) { checkpoint(); (store[symbol] = store[symbol] || []).push(d); persist(); notify(symbol); },
     // Drawings are edited in place; call checkpoint() before and this afterwards. save=false while dragging.
@@ -105,8 +121,22 @@ class DrawingLayer {
   }
 
   point(pt) {
-    const t = this.cell.xToTime(pt.x), price = this.cell.candle.coordinateToPrice(pt.y);
-    return t === null || price === null ? null : { t, price };
+    const t = this.cell.xToTime(pt.x);
+    let price = this.cell.candle.coordinateToPrice(pt.y);
+    if (t === null || price === null) return null;
+    if (Drawings.modes.magnet) {
+      // Snap to the nearest of the bar's O/H/L/C when it is within 15px.
+      const bar = this.cell.disp[this.cell.barIndexAt(t)];
+      if (bar) {
+        let best = null, bestDy = 15;
+        for (const v of [bar.open, bar.high, bar.low, bar.close]) {
+          const y = this.cell.candle.priceToCoordinate(v);
+          if (y !== null && Math.abs(y - pt.y) < bestDy) { bestDy = Math.abs(y - pt.y); best = v; }
+        }
+        if (best !== null) price = best;
+      }
+    }
+    return { t, price };
   }
 
   // Mouse position relative to the price pane; inPane is false over the axes or indicator panes.
@@ -121,6 +151,7 @@ class DrawingLayer {
   fibPrice(d, level) { return d.p2.price + (d.p1.price - d.p2.price) * level; }
 
   hitTest(x, y) {
+    if (Drawings.modes.hidden || Drawings.modes.locked) return null;
     const list = Drawings.list(this.cell.symbol);
     const sel = this.ui.selected();
     for (let i = list.length - 1; i >= 0; i--) {
@@ -167,7 +198,7 @@ class DrawingLayer {
   draw(target) {
     target.useMediaCoordinateSpace(({ context: ctx, mediaSize: size }) => {
       const sel = this.ui.selected();
-      const items = Drawings.list(this.cell.symbol).slice();
+      const items = Drawings.modes.hidden ? [] : Drawings.list(this.cell.symbol).slice();
       if (this.pending) items.push(this.pending);
       for (const d of items) {
         const a = this.screen(d.p1), b = this.screen(d.p2);

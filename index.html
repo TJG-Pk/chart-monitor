@@ -7,45 +7,95 @@
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
-<div class="bar">
-  <div class="group" id="symbols"></div>
-  <div class="group">
-    <select id="layout" title="จำนวนช่องกราฟ"></select>
-    <select id="savedLayouts" title="บันทึก / เปิด layout"></select>
+<div id="app">
+  <!-- ===== top toolbar ===== -->
+  <header id="topbar">
+    <div class="brand" title="Chart Monitor">CM</div>
+    <div class="tb-group" id="symbols"></div>
+    <div class="tb-sep"></div>
+    <div class="tb-group" id="intervalBtns"></div>
+    <div class="tb-sep"></div>
+    <div class="tb-group"><select id="style" class="tb-select" title="ประเภทกราฟ"></select></div>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" id="openIndicators" title="Indicators">ƒx <span class="tb-label">Indicators</span></button>
+    <button class="tb-btn" id="openAlerts" title="Alerts">🔔 <span class="tb-label" id="alertCount">0</span></button>
+    <button class="tb-btn" id="replayBtn" title="Bar Replay ช่องที่เลือก">⏪ <span class="tb-label">Replay</span></button>
+    <div class="tb-sep"></div>
+    <button class="tb-btn" id="undoBtn" title="Undo (Ctrl+Z)">↶</button>
+    <button class="tb-btn" id="redoBtn" title="Redo (Ctrl+Y)">↷</button>
+    <span class="tb-spacer"></span>
+    <div class="tb-group">
+      <select id="layout" class="tb-select" title="จำนวนช่องกราฟ"></select>
+      <select id="savedLayouts" class="tb-select" title="บันทึก / เปิด layout"></select>
+    </div>
+    <button class="tb-btn" id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙</button>
+    <button class="tb-btn" id="snapshotBtn" title="บันทึกรูปกราฟ (Alt+S)">📷</button>
+    <button class="tb-btn" id="fullscreenBtn" title="เต็มจอ">⛶</button>
+    <button class="tb-btn trade-btn" id="tradeBtn" title="เปิดแผงส่งคำสั่ง">Trade</button>
+  </header>
+
+  <div id="workspace">
+    <!-- ===== left drawing toolbar ===== -->
+    <nav id="lefttools">
+      <div id="tools"></div>
+      <div class="lt-sep"></div>
+      <div id="toolModes"></div>
+    </nav>
+
+    <!-- ===== center: charts + bottom panel ===== -->
+    <div id="center">
+      <div id="chartArea">
+        <div id="grid"></div>
+        <div id="drawOptions" class="floating-bar" hidden></div>
+      </div>
+      <div id="bottomResize" title="ลากเพื่อปรับความสูง"></div>
+      <section id="bottomPanel">
+        <div class="bp-tabs" id="bpTabs"></div>
+        <div class="bp-body" id="bpBody"></div>
+      </section>
+      <!-- ===== bottom toolbar ===== -->
+      <footer id="bottombar">
+        <div class="tb-group" id="rangeBtns"></div>
+        <div class="tb-sep"></div>
+        <div class="tb-group" id="overlayBtns"></div>
+        <span class="tb-spacer"></span>
+        <div class="status" id="status"><span class="dot"></span><span id="statusText">ยังไม่เชื่อมต่อ</span></div>
+        <div class="tb-sep"></div>
+        <span class="bb-text" title="เวลาบนกราฟ">UTC+7 Bangkok</span>
+        <div class="tb-sep"></div>
+        <div class="tb-group" id="scaleBtns"></div>
+        <button class="tb-btn small" id="toggleBottom" title="แสดง / ซ่อนแผงบัญชี">▴</button>
+      </footer>
+    </div>
+
+    <!-- ===== right widget panel + icon bar ===== -->
+    <aside id="rightPanel">
+      <section class="rp-page" data-page="watch">
+        <div class="rp-head"><b>Watchlist</b><span class="tb-spacer"></span><button class="tb-btn small" id="addWatch" title="เพิ่มสัญลักษณ์">＋</button></div>
+        <div class="wcols"><span>สัญลักษณ์</span><span>ราคา</span><span>เปลี่ยน%</span><span>Spread</span></div>
+        <div id="watchRows"></div>
+        <div id="watchDetail" class="watch-detail"></div>
+      </section>
+      <section class="rp-page" data-page="order" id="tradePanel"></section>
+      <section class="rp-page" data-page="alerts">
+        <div class="rp-head"><b>Alerts</b></div>
+        <p class="hint pad">แจ้งเตือนด้วยเสียง + การแจ้งเตือนของเบราว์เซอร์เมื่อราคาแตะเส้น (ต้องเปิดหน้านี้ไว้)</p>
+        <div id="alertsList" class="list pad"></div>
+      </section>
+      <section class="rp-page" data-page="objects">
+        <div class="rp-head"><b>Object Tree</b></div>
+        <div id="objectTree" class="list pad"></div>
+      </section>
+    </aside>
+    <nav id="rightIcons">
+      <button data-page="watch" title="Watchlist (Alt+W)">☰</button>
+      <button data-page="order" title="ส่งคำสั่ง">💹</button>
+      <button data-page="alerts" title="Alerts">🔔</button>
+      <button data-page="objects" title="Object Tree: เส้นที่วาดทั้งหมด">◫</button>
+    </nav>
   </div>
-  <div class="group">
-    <select id="style" title="ประเภทกราฟ"></select>
-    <select id="scale" title="สเกลราคา"></select>
-  </div>
-  <button id="openIndicators" title="เพิ่ม / ตั้งค่า indicator">ƒx Indicators</button>
-  <div class="group" id="overlayBtns"></div>
-  <div class="group tools" id="tools"></div>
-  <div class="group" id="drawOptions" hidden></div>
-  <button id="openAlerts" title="รายการ alert">🔔 0</button>
-  <div class="status" id="status"><span class="dot"></span><span id="statusText">ยังไม่เชื่อมต่อ</span></div>
-  <button id="toggleWatchlist" title="แสดง / ซ่อน Watchlist (Alt+W)">☰ Watchlist</button>
-  <button id="toggleTrade" title="แสดง / ซ่อนแผงเทรด">💹 เทรด</button>
-  <button id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙</button>
-</div>
-<div id="main">
-  <div id="grid"></div>
-  <aside id="watchlist">
-    <section id="watchSection">
-      <div class="whead"><b>Watchlist</b><button id="addWatch" title="เพิ่มสัญลักษณ์">+ เพิ่ม</button></div>
-      <div class="wcols"><span>สัญลักษณ์</span><span>ราคา</span><span>วันนี้</span><span>spread</span></div>
-      <div id="watchRows"></div>
-    </section>
-    <section id="tradePanel"></section>
-  </aside>
 </div>
 <div id="toasts"></div>
-
-<dialog id="searchDialog" class="wide">
-  <h2>ค้นหาสัญลักษณ์</h2>
-  <input type="search" id="searchInput" placeholder="พิมพ์ชื่อหรือคำอธิบาย เช่น EUR, gold, US30" autocomplete="off" spellcheck="false">
-  <div id="searchList" class="list results"></div>
-  <div class="actions"><span class="spacer"></span><button type="button" id="closeSearch">ปิด</button></div>
-</dialog>
 
 <dialog id="settings">
   <form method="dialog" id="settingsForm">
@@ -77,11 +127,11 @@
   </form>
 </dialog>
 
-<dialog id="alertsDialog" class="wide">
-  <h2>Alerts</h2>
-  <p class="hint">แจ้งเตือนด้วยเสียง + การแจ้งเตือนของเบราว์เซอร์ เมื่อราคาแตะเส้น (ต้องเปิดหน้านี้ไว้)</p>
-  <div id="alertsList" class="list"></div>
-  <div class="actions"><span class="spacer"></span><button type="button" id="closeAlerts">ปิด</button></div>
+<dialog id="searchDialog" class="wide">
+  <h2>ค้นหาสัญลักษณ์</h2>
+  <input type="search" id="searchInput" placeholder="พิมพ์ชื่อหรือคำอธิบาย เช่น EUR, gold, US30" autocomplete="off" spellcheck="false">
+  <div id="searchList" class="list results"></div>
+  <div class="actions"><span class="spacer"></span><button type="button" id="closeSearch">ปิด</button></div>
 </dialog>
 
 <dialog id="riskDialog">
@@ -100,17 +150,6 @@
       <button type="submit" class="on">บันทึก</button>
     </div>
   </form>
-</dialog>
-
-<dialog id="journalDialog" class="xwide">
-  <div class="actions" style="margin-top:0">
-    <h2 style="margin:0">Journal</h2><span class="spacer"></span>
-    <select id="journalDays"><option value="7">7 วัน</option><option value="30" selected>30 วัน</option><option value="90">90 วัน</option><option value="365">1 ปี</option></select>
-    <button type="button" id="journalCsv">⬇ CSV</button>
-  </div>
-  <div id="journalSummary" class="journal-summary"></div>
-  <div id="journalBody" class="journal-body"></div>
-  <div class="actions"><span class="spacer"></span><button type="button" id="closeJournal">ปิด</button></div>
 </dialog>
 
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5.2.1/dist/lightweight-charts.standalone.production.js"></script>
