@@ -9,20 +9,38 @@
 <body>
 <div class="bar">
   <div class="group" id="symbols"></div>
-  <div class="group"><select id="layout"></select></div>
-  <div class="group"><select id="style">
-    <option value="candles">แท่งเทียน</option>
-    <option value="ha">Heikin Ashi</option>
-  </select></div>
+  <div class="group">
+    <select id="layout" title="จำนวนช่องกราฟ"></select>
+    <select id="savedLayouts" title="บันทึก / เปิด layout"></select>
+  </div>
+  <div class="group">
+    <select id="style" title="ประเภทกราฟ"></select>
+    <select id="scale" title="สเกลราคา"></select>
+  </div>
   <button id="openIndicators" title="เพิ่ม / ตั้งค่า indicator">ƒx Indicators</button>
   <div class="group tools" id="tools"></div>
   <div class="group" id="drawOptions" hidden></div>
   <button id="openAlerts" title="รายการ alert">🔔 0</button>
   <div class="status" id="status"><span class="dot"></span><span id="statusText">ยังไม่เชื่อมต่อ</span></div>
-  <button id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙ ตั้งค่า</button>
+  <button id="toggleWatchlist" title="แสดง / ซ่อน Watchlist (Alt+W)">☰ Watchlist</button>
+  <button id="openSettings" title="ตั้งค่าการเชื่อมต่อ MT5">⚙</button>
 </div>
-<div id="grid"></div>
+<div id="main">
+  <div id="grid"></div>
+  <aside id="watchlist">
+    <div class="whead"><b>Watchlist</b><button id="addWatch" title="เพิ่มสัญลักษณ์">+ เพิ่ม</button></div>
+    <div class="wcols"><span>สัญลักษณ์</span><span>ราคา</span><span>วันนี้</span><span>spread</span></div>
+    <div id="watchRows"></div>
+  </aside>
+</div>
 <div id="toasts"></div>
+
+<dialog id="searchDialog" class="wide">
+  <h2>ค้นหาสัญลักษณ์</h2>
+  <input type="search" id="searchInput" placeholder="พิมพ์ชื่อหรือคำอธิบาย เช่น EUR, gold, US30" autocomplete="off" spellcheck="false">
+  <div id="searchList" class="list results"></div>
+  <div class="actions"><span class="spacer"></span><button type="button" id="closeSearch">ปิด</button></div>
+</dialog>
 
 <dialog id="settings">
   <form method="dialog" id="settingsForm">

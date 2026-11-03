@@ -8,8 +8,13 @@ over HTTP on 127.0.0.1 (plus the chart page itself), so the page can draw real p
 Endpoints (all times are real UTC seconds; MT5 server time is converted):
     GET /api/status                      -> {"ok", "error", "server", "account", "utcOffset"}
     GET /api/symbols                     -> {"XAUUSD": {"name": "XAUUSDm", "digits": 3}, ...}
+    GET /api/search?q=eur                -> [{"name", "description", "path", "digits"}, ...]
+    GET /api/info?symbol=EURUSD          -> {"name", "digits", "description", "dayOpen"}
     GET /api/candles?symbol=XAUUSD&tf=M1&count=500[&to=<utc seconds>]
     GET /api/stream                      -> Server-Sent Events, one "tick" event per price change
+
+`symbol` is either an alias from SYMBOL_CANDIDATES (XAUUSD, NASDAQ) or any MT5 symbol name.
+Every symbol that has been asked for is streamed from then on.
 """
 
 import argparse
@@ -60,7 +65,8 @@ class Bridge:
         self.overrides = overrides
         self.connected = False
         self.error = "ยังไม่ได้เชื่อมต่อ MT5"
-        self.symbols = {}          # display name -> {"name": broker symbol, "digits": int}
+        self.symbols = {}          # alias -> {"name": broker symbol, "digits": int}
+        self.watch = {}            # every symbol the page asked for (aliases included), streamed live
         self.utc_offset = None     # broker server time minus UTC, in seconds
         self.fixed_offset = False  # True when set with --utc-offset
         self.server = ""
@@ -85,6 +91,8 @@ class Bridge:
             self.server = info.server
             self.account = str(info.login)
             self.symbols = self._resolve_symbols()
+            # Keep symbols added from the page across a reconnect, but refresh the aliases.
+            self.watch = dict(self.watch, **self.symbols)
             if self.utc_offset is None:
                 self.detect_offset()
         self.connected = True
@@ -112,8 +120,53 @@ class Bridge:
                 continue
             info = mt5.symbol_info(name)
             if info is not None:
-                found[display] = {"name": name, "digits": info.digits}
+                found[display] = {"name": name, "digits": info.digits, "description": info.description}
         return found
+
+    def resolve(self, display):
+        """Alias or MT5 symbol name -> {"name", "digits", "description"}, enabling it in
+        Market Watch and adding it to the live stream. None if MT5 has no such symbol."""
+        if display in self.watch:
+            return self.watch[display]
+        with mt5_lock:
+            info = mt5.symbol_info(display)
+            if info is None:
+                return None
+            if not info.visible:
+                mt5.symbol_select(display, True)
+        entry = {"name": display, "digits": info.digits, "description": info.description}
+        self.watch[display] = entry
+        return entry
+
+    def search(self, text, limit=50):
+        text = text.strip().upper()
+        with mt5_lock:
+            all_syms = mt5.symbols_get() or []
+        out = []
+        for alias, s in self.symbols.items():
+            if not text or text in alias or text in s["name"].upper():
+                out.append({"name": alias, "description": s["description"], "path": "alias -> " + s["name"],
+                            "digits": s["digits"]})
+        # Names starting with the text first, then other matches in name or description.
+        hits = [s for s in all_syms if not text or text in s.name.upper() or text in (s.description or "").upper()]
+        hits.sort(key=lambda s: (not s.name.upper().startswith(text), not s.visible, len(s.name), s.name))
+        for s in hits[:limit]:
+            out.append({"name": s.name, "description": s.description, "path": s.path, "digits": s.digits})
+        return out[:limit]
+
+    def info(self, display):
+        sym = self.resolve(display)
+        if not sym:
+            raise LookupError("ไม่พบสัญลักษณ์ %s ใน MT5" % display)
+        # session_open is the terminal's own "today" open. The D1 bar is only a fallback: for a
+        # symbol whose history MT5 has not loaded yet it can be days old.
+        with mt5_lock:
+            live = mt5.symbol_info(sym["name"])
+            day_open = live.session_open if live is not None and live.session_open > 0 else None
+            if day_open is None:
+                day = mt5.copy_rates_from_pos(sym["name"], mt5.TIMEFRAME_D1, 0, 1)
+                day_open = float(day[0]["open"]) if day is not None and len(day) else None
+        return dict(sym, mt5=sym["name"], name=display, dayOpen=day_open)
 
     def ensure_connected(self):
         if self.connected:
@@ -154,7 +207,7 @@ class Bridge:
 
     # ---------- data ----------
     def candles(self, display, tf, count, to_utc=None):
-        sym = self.symbols.get(display)
+        sym = self.resolve(display)
         if not sym:
             raise LookupError("ไม่พบสัญลักษณ์ %s ใน MT5" % display)
         if tf not in TIMEFRAMES and tf not in SECOND_TIMEFRAMES:
@@ -228,7 +281,7 @@ class Bridge:
             if not self.ensure_connected():
                 time.sleep(5)
                 continue
-            for display, sym in list(self.symbols.items()):
+            for display, sym in list(self.watch.items()):
                 since = last_msc.get(display)
                 with mt5_lock:
                     if since is None:
@@ -327,6 +380,13 @@ class Handler(SimpleHTTPRequestHandler):
             return self.send_json(503, {"error": b.error})
         if url.path == "/api/symbols":
             return self.send_json(200, b.symbols)
+        if url.path == "/api/search":
+            return self.send_json(200, b.search(q.get("q", "")))
+        if url.path == "/api/info":
+            try:
+                return self.send_json(200, b.info(q.get("symbol", "")))
+            except LookupError as e:
+                return self.send_json(404, {"error": str(e)})
         if url.path == "/api/candles":
             try:
                 bars = b.candles(q.get("symbol", ""), q.get("tf", ""), q.get("count", 500), q.get("to"))

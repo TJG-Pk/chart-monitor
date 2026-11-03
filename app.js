@@ -1,6 +1,11 @@
 // ===== ตั้งค่า (แก้ตรงนี้ได้) =====
-// ชื่อสัญลักษณ์ต้องตรงกับ SYMBOL_CANDIDATES ใน bridge/bridge.py
-const SYMBOLS = ["XAUUSD", "NASDAQ"];
+// Watchlist เริ่มต้น: XAUUSD / NASDAQ เป็นชื่อย่อจาก SYMBOL_CANDIDATES ใน bridge/bridge.py
+// ส่วนตัวอื่นใช้ชื่อตามใน MT5 ได้เลย (ค้นหาเพิ่มได้จากหน้าเว็บ)
+const DEFAULT_WATCHLIST = ["XAUUSD", "NASDAQ", "EURUSD", "GBPUSD", "USDJPY"];
+const CHART_STYLES = {
+  candles: "แท่งเทียน", hollow: "แท่งเทียนกลวง", bars: "Bar (OHLC)", ha: "Heikin Ashi", line: "Line", area: "Area"
+};
+const SCALES = { normal: "สเกลปกติ", log: "Log", percent: "%" };
 // Listed in menu order (an object would sort the number-like keys first).
 const INTERVAL_LIST = [
   ["10s", { label: "10s", tf: "S10", seconds: 10 }],   // แท่งวินาทีสร้างจาก tick ใน bridge
@@ -24,9 +29,12 @@ const LAYOUTS = {
   "1x1": { label:"ช่องเดียว",             css:"grid-template-columns:1fr;grid-template-rows:1fr", n:1 }
 };
 const DEFAULT_STATE = {
-  symbol: "XAUUSD", layout: "2x2", style: "candles",
+  layout: "2x2", style: "candles", scale: "normal",
+  link: true,                    // เปลี่ยนสัญลักษณ์ทีเดียวทุกช่อง
+  showWatchlist: true,
+  watchlist: DEFAULT_WATCHLIST,
   indicators: [{ id: "stoch", type: "stoch", params: {} }, { id: "rsi", type: "rsi", params: {} }],
-  intervals: ["1", "5", "15", "60"]
+  cells: ["1", "5", "15", "60"].map(interval => ({ symbol: "XAUUSD", interval }))
 };
 const DEFAULT_BRIDGE = "http://127.0.0.1:8000";
 const HISTORY_BARS = 500;      // แท่งที่โหลดต่อครั้ง
@@ -38,7 +46,7 @@ const RESYNC_MS = 60000;       // ดึงแท่งล่าสุดจา�
 // day boundaries and labels all read in local time.
 const TZ_SHIFT = 7 * 3600;
 const COLORS = { up: "#26a69a", down: "#ef5350", volUp: "rgba(38,166,154,.35)", volDown: "rgba(239,83,80,.35)",
-  band: "#4b5563", ask: "#ef5350" };
+  band: "#4b5563", ask: "#ef5350", line: "#2f81f7" };
 
 const STATE_KEY = "chartMonitorState";
 const SETTINGS_KEY = "chartMonitorBridge";
@@ -50,30 +58,51 @@ function saveJson(key, value) {
   try { value === null ? localStorage.removeItem(key) : localStorage.setItem(key, JSON.stringify(value)); } catch (e) {}
 }
 
-let state = Object.assign({}, DEFAULT_STATE, { intervals: DEFAULT_STATE.intervals.slice() });
+let state = JSON.parse(JSON.stringify(DEFAULT_STATE));
 {
   const saved = loadJson(STATE_KEY);
-  if (saved && SYMBOLS.includes(saved.symbol) && LAYOUTS[saved.layout]) {
-    state = Object.assign(state, saved);
-    if (saved.style === "8") state.style = "ha";            // ค่าจากเวอร์ชัน widget เดิม
-    if (state.style !== "ha") state.style = "candles";
-    state.intervals = (Array.isArray(saved.intervals) ? saved.intervals : []).map(v => INTERVALS[v] ? v : "15");
-    if (!Array.isArray(saved.indicators)) {               // ค่าจากเวอร์ชันที่มีแค่ช่องติ๊ก Stoch / RSI
-      state.indicators = [];
-      if (saved.stoch !== false) state.indicators.push({ id: "stoch", type: "stoch", params: {} });
-      if (saved.rsi !== false) state.indicators.push({ id: "rsi", type: "rsi", params: {} });
-    }
-    state.indicators = state.indicators.filter(x => INDICATOR_DEFS[x.type]);
-    delete state.stoch; delete state.rsi;
+  if (saved && LAYOUTS[saved.layout]) state = normalizeState(Object.assign(state, saved));
+}
+
+// Fill in / upgrade settings saved by older versions of the page.
+function normalizeState(s) {
+  if (s.style === "8") s.style = "ha";                     // ค่าจากเวอร์ชัน widget เดิม
+  if (!CHART_STYLES[s.style]) s.style = "candles";
+  if (!SCALES[s.scale]) s.scale = "normal";
+  if (!Array.isArray(s.cells)) {                           // เดิมทุกช่องใช้ state.symbol เดียวกัน
+    s.cells = (Array.isArray(s.intervals) ? s.intervals : DEFAULT_STATE.cells.map(c => c.interval))
+      .map(interval => ({ symbol: s.symbol || "XAUUSD", interval }));
   }
+  s.cells = s.cells.map(c => ({ symbol: c.symbol || "XAUUSD", interval: INTERVALS[c.interval] ? c.interval : "15" }));
+  if (!Array.isArray(s.indicators)) {                      // ค่าจากเวอร์ชันที่มีแค่ช่องติ๊ก Stoch / RSI
+    s.indicators = [];
+    if (s.stoch !== false) s.indicators.push({ id: "stoch", type: "stoch", params: {} });
+    if (s.rsi !== false) s.indicators.push({ id: "rsi", type: "rsi", params: {} });
+  }
+  s.indicators = s.indicators.filter(x => INDICATOR_DEFS[x.type]);
+  if (!Array.isArray(s.watchlist)) s.watchlist = DEFAULT_WATCHLIST.slice();
+  delete s.symbol; delete s.intervals; delete s.stoch; delete s.rsi;
+  return s;
 }
 
 // Served by the bridge itself -> same origin. Opened elsewhere (e.g. GitHub Pages) -> local bridge.
 const servedByBridge = /^(localhost|127\.0\.0\.1)$/.test(location.hostname) && location.protocol === "http:";
 let settings = Object.assign({ bridgeUrl: servedByBridge ? "" : DEFAULT_BRIDGE }, loadJson(SETTINGS_KEY) || {});
-let brokerSymbols = {};        // display name -> { name, digits } from the bridge
+let brokerSymbols = {};        // symbol -> { name, mt5, digits, description, dayOpen } from /api/info
+const infoRequests = {};
 
 function save() { saveJson(STATE_KEY, state); }
+
+// Symbol details from the bridge, fetched once per symbol (this also starts its live stream).
+function ensureInfo(symbol) {
+  if (brokerSymbols[symbol]) return Promise.resolve(brokerSymbols[symbol]);
+  if (!infoRequests[symbol]) {
+    infoRequests[symbol] = Mt5.info(symbol)
+      .then(info => (brokerSymbols[symbol] = info))
+      .finally(() => { delete infoRequests[symbol]; });
+  }
+  return infoRequests[symbol];
+}
 
 // ---------- time formatting ----------
 const fmtCache = {};
@@ -102,9 +131,9 @@ let syncing = false;
 class ChartCell {
   constructor(parent, index) {
     this.index = index;
-    this.symbol = state.symbol;
-    this.precision = brokerSymbols[this.symbol].digits;
-    this.iv = INTERVALS[state.intervals[index]];
+    this.symbol = state.cells[index].symbol;
+    this.precision = 2;           // replaced by the symbol's digits once /api/info answers
+    this.iv = INTERVALS[state.cells[index].interval];
     this.bars = [];
     this.disp = [];
     this.dead = false;
@@ -116,21 +145,26 @@ class ChartCell {
 
     this.el = document.createElement("div");
     this.el.className = "cell";
+    this.el.addEventListener("pointerdown", () => setActiveCell(this.index), true);
     const header = document.createElement("header");
-    const name = document.createElement("span");
+    header.title = "ดับเบิลคลิกเพื่อขยายเต็มจอ";
+    header.addEventListener("dblclick", e => { if (!e.target.closest("button, select")) toggleMaximize(this.index); });
+    const name = document.createElement("button");
     name.className = "name";
-    name.textContent = this.symbol;
-    const src = document.createElement("span");
-    src.textContent = "MT5:" + brokerSymbols[this.symbol].name;
+    name.textContent = this.symbol + " ▾";
+    name.title = "เปลี่ยนสัญลักษณ์";
+    name.addEventListener("click", () => openSymbolSearch(sym => setSymbol(sym, this.index)));
+    this.srcEl = document.createElement("span");
+    this.srcEl.className = "src";
     this.sel = document.createElement("select");
     for (const [k, iv] of INTERVAL_LIST) {
       const o = document.createElement("option");
       o.value = k; o.textContent = iv.label;
-      if (k === state.intervals[index]) o.selected = true;
+      if (k === state.cells[index].interval) o.selected = true;
       this.sel.appendChild(o);
     }
     this.sel.addEventListener("change", () => {
-      state.intervals[index] = this.sel.value;
+      state.cells[index].interval = this.sel.value;
       save();
       this.destroyChart();
       this.iv = INTERVALS[this.sel.value];
@@ -144,7 +178,17 @@ class ChartCell {
     this.spreadEl.title = "Spread (Ask − Bid)";
     this.lastEl = document.createElement("span");
     this.lastEl.className = "last";
-    header.append(name, src, this.sel, this.countdownEl, this.spreadEl, this.lastEl);
+    const shot = document.createElement("button");
+    shot.className = "icon";
+    shot.textContent = "📷";
+    shot.title = "บันทึกรูปกราฟ (Alt+S)";
+    shot.addEventListener("click", () => this.screenshot());
+    const max = document.createElement("button");
+    max.className = "icon";
+    max.textContent = "⤢";
+    max.title = "ขยาย / ย่อ (ดับเบิลคลิกหัวกราฟ)";
+    max.addEventListener("click", () => toggleMaximize(this.index));
+    header.append(name, this.srcEl, this.sel, this.countdownEl, this.spreadEl, this.lastEl, shot, max);
 
     this.chartEl = document.createElement("div");
     this.chartEl.className = "chart";
@@ -180,10 +224,30 @@ class ChartCell {
       localization: { timeFormatter: t => daily ? fmtDate(t) : fmtDate(t) + " " + (withSeconds ? fmtTimeSec(t) : fmtTime(t)) }
     });
     const minMove = Math.pow(10, -this.precision);
-    this.candle = chart.addSeries(LW.CandlestickSeries, {
-      upColor: COLORS.up, downColor: COLORS.down, wickUpColor: COLORS.up, wickDownColor: COLORS.down,
-      borderVisible: false, priceFormat: { type: "price", precision: this.precision, minMove }
-    });
+    // The main price series; called `candle` everywhere although it can be bars, line or area.
+    const priceFormat = { type: "price", precision: this.precision, minMove };
+    const ohlcColors = { upColor: COLORS.up, downColor: COLORS.down };
+    switch (state.style) {
+      case "line":
+        this.candle = chart.addSeries(LW.LineSeries, { color: COLORS.line, lineWidth: 2, priceFormat });
+        break;
+      case "area":
+        this.candle = chart.addSeries(LW.AreaSeries, { lineColor: COLORS.line, lineWidth: 2,
+          topColor: "rgba(47,129,247,.35)", bottomColor: "rgba(47,129,247,0)", priceFormat });
+        break;
+      case "bars":
+        this.candle = chart.addSeries(LW.BarSeries, Object.assign({ thinBars: false, priceFormat }, ohlcColors));
+        break;
+      case "hollow":
+        this.candle = chart.addSeries(LW.CandlestickSeries, { upColor: "rgba(0,0,0,0)", downColor: COLORS.down,
+          borderVisible: true, borderUpColor: COLORS.up, borderDownColor: COLORS.down,
+          wickUpColor: COLORS.up, wickDownColor: COLORS.down, priceFormat });
+        break;
+      default:   // candles, ha
+        this.candle = chart.addSeries(LW.CandlestickSeries, Object.assign({
+          wickUpColor: COLORS.up, wickDownColor: COLORS.down, borderVisible: false, priceFormat }, ohlcColors));
+    }
+    chart.priceScale("right").applyOptions({ mode: { normal: 0, log: 1, percent: 2 }[state.scale] });
     this.volume = chart.addSeries(LW.HistogramSeries, {
       priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false
     });
@@ -262,6 +326,17 @@ class ChartCell {
     this.noMoreHistory = false;
     this.bars = [];
     this.showOverlay("กำลังโหลด…");
+    try {
+      const info = await ensureInfo(this.symbol);
+      if (this.dead) return;
+      this.precision = info.digits;
+      this.srcEl.textContent = info.mt5 !== this.symbol ? "MT5:" + info.mt5 : info.description || "";
+      this.srcEl.title = info.description || "";
+    } catch (e) {
+      if (!this.dead) this.showOverlay(e.message, true);
+      return;
+    }
+    if (this.chart) this.destroyChart();
     this.createChart();
     const gen = this.chart;
     try {
@@ -363,7 +438,9 @@ class ChartCell {
     if (!this.chart || !this.bars.length) return;
     const disp = state.style === "ha" ? Indicators.heikinAshi(this.bars) : this.bars;
     this.disp = disp;
-    const ohlc = b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
+    const ohlc = state.style === "line" || state.style === "area"
+      ? b => ({ time: b.time, value: b.close })
+      : b => ({ time: b.time, open: b.open, high: b.high, low: b.low, close: b.close });
     const vol = b => ({ time: b.time, value: b.volume, color: b.close >= b.open ? COLORS.volUp : COLORS.volDown });
     // Indicators are computed from the real bars, also when the candles are Heikin Ashi.
     const point = (v, i, o) => v === null ? { time: disp[i].time } :
@@ -442,6 +519,28 @@ class ChartCell {
     this.showLegend(i);
   }
 
+  // Save the chart (with drawings and indicators) as a PNG, titled with symbol, timeframe and time.
+  screenshot() {
+    if (!this.chart) return;
+    const shot = this.chart.takeScreenshot(true);
+    const out = document.createElement("canvas");
+    const head = 28 * (shot.width / this.chartEl.clientWidth || 1);
+    out.width = shot.width;
+    out.height = shot.height + head;
+    const ctx = out.getContext("2d");
+    ctx.fillStyle = "#161a20";
+    ctx.fillRect(0, 0, out.width, out.height);
+    ctx.drawImage(shot, 0, head);
+    const now = Date.now() / 1000 + TZ_SHIFT;
+    ctx.fillStyle = "#d6dbe3";
+    ctx.font = `${Math.round(head * 0.5)}px system-ui, sans-serif`;
+    ctx.fillText(`${this.symbol} · ${this.iv.label} · ${this.lastEl.textContent} · ${fmtDate(now)} ${fmtTime(now)}`, head * 0.4, head * 0.68);
+    const a = document.createElement("a");
+    a.href = out.toDataURL("image/png");
+    a.download = `${this.symbol}_${this.iv.label}_${new Date((now) * 1000).toISOString().slice(0, 16).replace(/[-:T]/g, "")}.png`;
+    a.click();
+  }
+
   destroyChart() {
     if (this.drawings) { this.drawings.destroy(); this.drawings = null; }
     clearInterval(this.resyncTimer);
@@ -485,8 +584,7 @@ function onPrice(p) {
   lastPrices[p.symbol] = p;
   if (prev) checkAlerts(p.symbol, prev.price, p.price);
   for (const c of cells) if (c.symbol === p.symbol) c.onPrice(p);
-  const px = document.querySelector(`#symbols button[data-symbol="${p.symbol}"] .px`);
-  if (px && brokerSymbols[p.symbol]) px.textContent = p.price.toFixed(brokerSymbols[p.symbol].digits);
+  updateWatchRow(p.symbol);
   const t = p.time + TZ_SHIFT;
   statusText.textContent = "เชื่อมต่อ MT5 แล้ว · " + fmtTime(t) + ":" + String(Math.floor(t) % 60).padStart(2, "0");
 }
@@ -512,19 +610,21 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 }
 
+let activeCell = 0;
+let maximized = -1;
+
 function renderGrid() {
   for (const c of cells) c.destroy();
   cells = [];
   grid.innerHTML = "";
-  if (!brokerSymbols[state.symbol]) {
-    showMessage(`<div class="error">ไม่พบ ${escapeHtml(state.symbol)} ใน MT5 ของคุณ</div>
-      <div class="hint">เพิ่มสัญลักษณ์ใน Market Watch หรือกำหนดชื่อด้วย --symbol ${escapeHtml(state.symbol)}=ชื่อในMT5</div>`);
-    return;
-  }
   const layout = LAYOUTS[state.layout];
   grid.style.cssText = layout.css;
+  while (state.cells.length < layout.n) {
+    state.cells.push({ symbol: state.cells[0] ? state.cells[0].symbol : "XAUUSD", interval: "15" });
+  }
+  if (activeCell >= layout.n) activeCell = 0;
+  if (maximized >= layout.n) maximized = -1;
   for (let i = 0; i < layout.n; i++) {
-    if (!state.intervals[i]) state.intervals[i] = "15";
     const cell = new ChartCell(grid, i);
     if (layout.big === i) {
       cell.el.classList.add("big");
@@ -533,25 +633,78 @@ function renderGrid() {
     }
     cells.push(cell);
   }
+  applyCellClasses();
+  renderSymbolBar();
 }
 
-function renderToolbar() {
+function applyCellClasses() {
+  grid.classList.toggle("max", maximized >= 0);
+  cells.forEach((c, i) => {
+    c.el.classList.toggle("active", i === activeCell && cells.length > 1);
+    c.el.classList.toggle("maxed", i === maximized);
+  });
+}
+
+function setActiveCell(i) {
+  if (i === activeCell) return;
+  activeCell = i;
+  applyCellClasses();
+  renderSymbolBar();
+  renderDrawToolbar();
+  renderWatchlist();
+}
+
+function toggleMaximize(i) {
+  maximized = maximized === i ? -1 : i;
+  applyCellClasses();
+}
+
+// With 🔗 on, a symbol change applies to every chart; otherwise only to chart `index`.
+function setSymbol(symbol, index = activeCell) {
+  if (state.link) state.cells.forEach(c => { c.symbol = symbol; });
+  else state.cells[index].symbol = symbol;
+  save();
+  UI.select(null);
+  const changed = cells.filter(c => c.symbol !== state.cells[c.index].symbol);
+  for (const c of changed) {
+    c.destroy();
+    const fresh = new ChartCell(document.createElement("div"), c.index);
+    c.el.replaceWith(fresh.el);
+    if (c.el.classList.contains("big")) {
+      fresh.el.classList.add("big");
+      fresh.el.style.cssText = c.el.style.cssText;
+    }
+    cells[c.index] = fresh;
+  }
+  applyCellClasses();
+  renderSymbolBar();
+  renderDrawToolbar();
+  renderWatchlist();
+}
+
+function activeSymbol() {
+  return (state.cells[activeCell] || state.cells[0]).symbol;
+}
+
+function renderSymbolBar() {
   const box = document.getElementById("symbols");
   box.innerHTML = "";
-  for (const name of SYMBOLS) {
-    const b = document.createElement("button");
-    b.dataset.symbol = name;
-    b.innerHTML = `${name} <span class="px"></span>`;
-    const info = brokerSymbols[name];
-    if (info) b.title = "MT5: " + info.name;
-    const lp = lastPrices[name];
-    if (lp && info) b.querySelector(".px").textContent = lp.price.toFixed(info.digits);
-    if (name === state.symbol) b.classList.add("on");
-    b.addEventListener("click", () => {
-      state.symbol = name; save(); UI.select(null); renderToolbar(); renderGrid();
-    });
-    box.appendChild(b);
-  }
+  const b = document.createElement("button");
+  b.className = "on";
+  b.textContent = "🔍 " + activeSymbol();
+  b.title = "ค้นหาสัญลักษณ์ใน MT5";
+  b.addEventListener("click", () => openSymbolSearch(sym => setSymbol(sym)));
+  const link = document.createElement("button");
+  link.textContent = state.link ? "🔗" : "⛓️‍💥";
+  link.className = state.link ? "on" : "";
+  link.title = state.link ? "ทุกช่องใช้สัญลักษณ์เดียวกัน (คลิกเพื่อแยกแต่ละช่อง)" : "แต่ละช่องเลือกสัญลักษณ์เองได้ (คลิกเพื่อผูกทุกช่อง)";
+  link.addEventListener("click", () => {
+    state.link = !state.link;
+    save();
+    if (state.link) setSymbol(activeSymbol());
+    else renderSymbolBar();
+  });
+  box.append(b, link);
 }
 
 async function connect() {
@@ -563,15 +716,15 @@ async function connect() {
     const st = await Mt5.status();
     if (!st.ok) throw new Error(st.error || "MT5 ยังไม่พร้อม");
     serverName = st.server + " #" + st.account;
-    brokerSymbols = await Mt5.symbols();
   } catch (e) {
     setStatus("error", e.message);
     showSetupHelp(e.message);
     retryTimer = setTimeout(connect, 5000);
     return;
   }
-  renderToolbar();
   renderGrid();
+  renderWatchlist();
+  refreshWatchInfo();
   stream = Mt5.streamTicks(onPrice, setStatus);
 }
 
@@ -604,11 +757,173 @@ for (const k in LAYOUTS) {
   layoutSel.appendChild(o);
 }
 layoutSel.value = state.layout;
-layoutSel.addEventListener("change", () => { state.layout = layoutSel.value; save(); renderGrid(); });
+layoutSel.addEventListener("change", () => { state.layout = layoutSel.value; maximized = -1; save(); renderGrid(); });
 
-const styleSel = document.getElementById("style");
-styleSel.value = state.style;
-styleSel.addEventListener("change", () => { state.style = styleSel.value; save(); for (const c of cells) c.render(true); });
+function fillSelect(sel, options, value, onChange) {
+  for (const [k, label] of Object.entries(options)) {
+    const o = document.createElement("option");
+    o.value = k; o.textContent = label;
+    sel.appendChild(o);
+  }
+  sel.value = value;
+  sel.addEventListener("change", () => onChange(sel.value));
+}
+// Changing the chart type swaps the series type, so the charts are rebuilt.
+fillSelect(document.getElementById("style"), CHART_STYLES, state.style, v => { state.style = v; save(); renderGrid(); });
+fillSelect(document.getElementById("scale"), SCALES, state.scale, v => {
+  state.scale = v;
+  save();
+  for (const c of cells) if (c.chart) c.chart.priceScale("right").applyOptions({ mode: { normal: 0, log: 1, percent: 2 }[v] });
+});
+
+// ---------- saved layouts ----------
+// A saved layout is a snapshot of everything on screen except drawings (those stay per symbol).
+const LAYOUTS_KEY = "chartMonitorLayouts";
+const savedSel = document.getElementById("savedLayouts");
+
+function renderSavedLayouts() {
+  const saved = loadJson(LAYOUTS_KEY) || {};
+  savedSel.innerHTML = `<option value="">💾 Layout…</option>`;
+  for (const name of Object.keys(saved)) {
+    const o = document.createElement("option");
+    o.value = "load:" + name; o.textContent = "เปิด: " + name;
+    savedSel.appendChild(o);
+  }
+  savedSel.insertAdjacentHTML("beforeend", `<option value="save">+ บันทึก layout นี้…</option>`);
+  for (const name of Object.keys(saved)) {
+    const o = document.createElement("option");
+    o.value = "del:" + name; o.textContent = "ลบ: " + name;
+    savedSel.appendChild(o);
+  }
+}
+
+savedSel.addEventListener("change", () => {
+  const v = savedSel.value;
+  savedSel.value = "";
+  const saved = loadJson(LAYOUTS_KEY) || {};
+  if (v === "save") {
+    const name = (prompt("ตั้งชื่อ layout นี้") || "").trim();
+    if (!name) return;
+    const { layout, style, scale, link, indicators, cells: cellList } = state;
+    saved[name] = JSON.parse(JSON.stringify({ layout, style, scale, link, indicators, cells: cellList }));
+    saveJson(LAYOUTS_KEY, saved);
+    toast("บันทึก layout “" + name + "” แล้ว");
+  } else if (v.startsWith("load:")) {
+    const snap = saved[v.slice(5)];
+    if (!snap) return;
+    state = normalizeState(Object.assign(state, JSON.parse(JSON.stringify(snap))));
+    save();
+    layoutSel.value = state.layout;
+    document.getElementById("style").value = state.style;
+    document.getElementById("scale").value = state.scale;
+    maximized = -1;
+    renderGrid();
+  } else if (v.startsWith("del:") && confirm("ลบ layout “" + v.slice(4) + "” ?")) {
+    delete saved[v.slice(4)];
+    saveJson(LAYOUTS_KEY, saved);
+  }
+  renderSavedLayouts();
+});
+
+// ---------- symbol search ----------
+const searchDlg = document.getElementById("searchDialog");
+const searchInput = document.getElementById("searchInput");
+const searchList = document.getElementById("searchList");
+let searchPick = null, searchTimer = 0, searchSeq = 0;
+
+function openSymbolSearch(onPick) {
+  searchPick = onPick;
+  searchInput.value = "";
+  searchDlg.showModal();
+  searchInput.focus();
+  runSearch();
+}
+
+async function runSearch() {
+  const seq = ++searchSeq;
+  let list;
+  try { list = await Mt5.search(searchInput.value); }
+  catch (e) { searchList.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`; return; }
+  if (seq !== searchSeq) return;
+  searchList.innerHTML = list.length ? "" : `<p class="hint">ไม่พบสัญลักษณ์</p>`;
+  for (const s of list) {
+    const row = document.createElement("button");
+    row.type = "button";
+    row.className = "result";
+    row.innerHTML = `<b>${escapeHtml(s.name)}</b><span>${escapeHtml(s.description || "")}</span><span class="hint">${escapeHtml(s.path || "")}</span>`;
+    row.addEventListener("click", () => { searchDlg.close(); if (searchPick) searchPick(s.name); });
+    searchList.appendChild(row);
+  }
+}
+searchInput.addEventListener("input", () => { clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 200); });
+searchInput.addEventListener("keydown", e => {
+  if (e.key === "Enter") { e.preventDefault(); const first = searchList.querySelector(".result"); if (first) first.click(); }
+});
+document.getElementById("closeSearch").addEventListener("click", () => searchDlg.close());
+
+// ---------- watchlist ----------
+const watchEl = document.getElementById("watchlist");
+
+function renderWatchlist() {
+  document.body.classList.toggle("with-watchlist", state.showWatchlist);
+  document.getElementById("toggleWatchlist").classList.toggle("on", state.showWatchlist);
+  const body = document.getElementById("watchRows");
+  body.innerHTML = "";
+  for (const symbol of state.watchlist) {
+    const row = document.createElement("div");
+    row.className = "wrow" + (symbol === activeSymbol() ? " on" : "");
+    row.dataset.symbol = symbol;
+    row.innerHTML = `<span class="sym">${escapeHtml(symbol)}</span><span class="px"></span><span class="chg"></span><span class="spr"></span>`;
+    const del = document.createElement("button");
+    del.className = "icon del";
+    del.textContent = "✕";
+    del.title = "เอาออกจาก watchlist";
+    del.addEventListener("click", e => {
+      e.stopPropagation();
+      state.watchlist = state.watchlist.filter(s => s !== symbol);
+      save(); renderWatchlist();
+    });
+    row.appendChild(del);
+    row.addEventListener("click", () => setSymbol(symbol));
+    body.appendChild(row);
+    updateWatchRow(symbol);
+  }
+}
+
+function updateWatchRow(symbol) {
+  const row = watchEl.querySelector(`.wrow[data-symbol="${CSS.escape(symbol)}"]`);
+  const p = lastPrices[symbol], info = brokerSymbols[symbol];
+  if (!row || !p || !info) return;
+  row.querySelector(".px").textContent = p.price.toFixed(info.digits);
+  if (info.dayOpen) {
+    const chg = (p.price - info.dayOpen) / info.dayOpen * 100;
+    const el = row.querySelector(".chg");
+    el.textContent = (chg >= 0 ? "+" : "") + chg.toFixed(2) + "%";
+    el.className = "chg " + (chg >= 0 ? "up" : "down");
+  }
+  row.querySelector(".spr").textContent = p.ask ? (p.ask - p.bid).toFixed(info.digits) : "";
+}
+
+// /api/info also subscribes the symbol to the stream; refresh it now and then for the day's open.
+function refreshWatchInfo() {
+  for (const symbol of state.watchlist) {
+    delete brokerSymbols[symbol];
+    ensureInfo(symbol).then(() => updateWatchRow(symbol)).catch(() => {
+      const row = watchEl.querySelector(`.wrow[data-symbol="${CSS.escape(symbol)}"] .px`);
+      if (row) row.textContent = "ไม่พบ";
+    });
+  }
+}
+setInterval(() => { if (stream) refreshWatchInfo(); }, 10 * 60 * 1000);
+
+document.getElementById("addWatch").addEventListener("click", () => openSymbolSearch(sym => {
+  if (!state.watchlist.includes(sym)) state.watchlist.push(sym);
+  save(); renderWatchlist(); ensureInfo(sym).then(() => updateWatchRow(sym)).catch(() => {});
+}));
+document.getElementById("toggleWatchlist").addEventListener("click", () => {
+  state.showWatchlist = !state.showWatchlist;
+  save(); renderWatchlist();
+});
 
 // ---------- drawing tools ----------
 let activeTool = "cursor";
@@ -646,12 +961,20 @@ function renderDrawToolbar() {
   }
   const clear = document.createElement("button");
   clear.textContent = "🗑";
-  clear.title = "ลบเส้นทั้งหมดของ " + state.symbol;
+  const sym = activeSymbol();
+  clear.title = "ลบเส้นทั้งหมดของ " + sym;
   clear.addEventListener("click", () => {
-    if (Drawings.list(state.symbol).length && confirm("ลบเส้นทั้งหมดของ " + state.symbol + " ?")) {
-      Drawings.clear(state.symbol); UI.select(null);
+    if (Drawings.list(sym).length && confirm("ลบเส้นทั้งหมดของ " + sym + " ?")) {
+      Drawings.clear(sym); UI.select(null);
     }
   });
+  const undo = document.createElement("button");
+  undo.className = "undo";
+  undo.textContent = "↶";
+  undo.title = "ย้อนกลับการวาด (Ctrl+Z)";
+  undo.disabled = !Drawings.canUndo();
+  undo.addEventListener("click", undoDrawing);
+  box.appendChild(undo);
   box.appendChild(clear);
 
   // Options for the selected drawing: colour, alert (horizontal lines), delete.
@@ -665,7 +988,7 @@ function renderDrawToolbar() {
     s.className = "swatch" + (d.color === color ? " on" : "");
     s.style.background = color;
     s.title = "เปลี่ยนสี";
-    s.addEventListener("click", () => { d.color = color; Drawings.changed(selection.symbol); renderDrawToolbar(); });
+    s.addEventListener("click", () => { Drawings.checkpoint(); d.color = color; Drawings.changed(selection.symbol); renderDrawToolbar(); });
     opts.appendChild(s);
   }
   if (d.type === "hline") {
@@ -691,10 +1014,37 @@ function deleteSelected() {
   renderAlertCount();
 }
 
+Drawings.onChange(() => {
+  const u = document.querySelector("#tools .undo");
+  if (u) u.disabled = !Drawings.canUndo();
+});
+
+function undoDrawing() {
+  if (!Drawings.undo()) return;
+  if (selection && !selectedDrawing()) selection = null;
+  renderDrawToolbar();
+  renderAlertCount();
+}
+
+// TradingView-style shortcuts. Alt+letter picks a drawing tool; the cursor tool is Esc.
+const SHORTCUT_TOOLS = { t: "trend", r: "ray", h: "hline", v: "vline", b: "rect", f: "fib" };
 document.addEventListener("keydown", (e) => {
   if (e.target.closest("input, select, textarea, dialog")) return;
-  if (e.key === "Escape") { UI.setTool("cursor"); UI.select(null); }
-  if ((e.key === "Delete" || e.key === "Backspace") && selection) { e.preventDefault(); deleteSelected(); }
+  const key = e.key.toLowerCase();
+  if (e.key === "Escape") { UI.setTool("cursor"); UI.select(null); if (maximized >= 0) toggleMaximize(maximized); return; }
+  if ((e.key === "Delete" || e.key === "Backspace") && selection) { e.preventDefault(); deleteSelected(); return; }
+  if ((e.ctrlKey || e.metaKey) && key === "z") { e.preventDefault(); undoDrawing(); return; }
+  if (e.altKey && SHORTCUT_TOOLS[key]) { e.preventDefault(); UI.setTool(SHORTCUT_TOOLS[key]); return; }
+  if (e.altKey && key === "s") { e.preventDefault(); if (cells[activeCell]) cells[activeCell].screenshot(); return; }
+  if (e.altKey && key === "w") { e.preventDefault(); document.getElementById("toggleWatchlist").click(); return; }
+  if (e.altKey && key === "enter") { e.preventDefault(); toggleMaximize(activeCell); return; }
+  // Type a symbol name (like TradingView): any letter opens the search with it filled in.
+  if (!e.altKey && !e.ctrlKey && !e.metaKey && /^[a-z]$/i.test(e.key)) {
+    e.preventDefault();
+    openSymbolSearch(sym => setSymbol(sym));
+    searchInput.value = e.key.toUpperCase();
+    runSearch();
+  }
 });
 
 // ---------- alerts ----------
@@ -884,7 +1234,9 @@ setInterval(() => {
   for (const c of cells) c.updateCountdown(now);
 }, 1000);
 
-renderToolbar();
+renderSymbolBar();
+renderSavedLayouts();
+renderWatchlist();
 renderDrawToolbar();
 renderAlertCount();
 connect();
