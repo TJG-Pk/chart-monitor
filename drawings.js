@@ -24,6 +24,13 @@ const Drawings = (() => {
   }
   function notify(symbol) { for (const fn of listeners) fn(symbol); }
 
+  // Undo history: a snapshot of every symbol's drawings before each change.
+  const history = [];
+  function checkpoint() {
+    history.push(JSON.stringify(store));
+    if (history.length > 50) history.shift();
+  }
+
   let seq = 0;
   function make(type, p1, p2) {
     return { id: Date.now().toString(36) + (seq++).toString(36), type,
@@ -35,11 +42,21 @@ const Drawings = (() => {
     list: symbol => store[symbol] || [],
     all: () => store,
     get: (symbol, id) => (store[symbol] || []).find(d => d.id === id),
-    add(symbol, d) { (store[symbol] = store[symbol] || []).push(d); persist(); notify(symbol); },
-    // Drawings are edited in place; call this afterwards. save=false while dragging.
+    checkpoint,
+    canUndo: () => history.length > 0,
+    undo() {
+      if (!history.length) return false;
+      const before = store;
+      store = JSON.parse(history.pop());
+      persist();
+      for (const symbol of new Set([...Object.keys(before), ...Object.keys(store)])) notify(symbol);
+      return true;
+    },
+    add(symbol, d) { checkpoint(); (store[symbol] = store[symbol] || []).push(d); persist(); notify(symbol); },
+    // Drawings are edited in place; call checkpoint() before and this afterwards. save=false while dragging.
     changed(symbol, save = true) { if (save) persist(); notify(symbol); },
-    remove(symbol, id) { store[symbol] = (store[symbol] || []).filter(d => d.id !== id); persist(); notify(symbol); },
-    clear(symbol) { store[symbol] = []; persist(); notify(symbol); },
+    remove(symbol, id) { checkpoint(); store[symbol] = (store[symbol] || []).filter(d => d.id !== id); persist(); notify(symbol); },
+    clear(symbol) { checkpoint(); store[symbol] = []; persist(); notify(symbol); },
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); }
   };
 })();
@@ -275,7 +292,7 @@ class DrawingLayer {
     this.ui.select(symbol, hit.d.id);
     const start = this.point(pt);
     if (!start) return;
-    this.drag = { d: hit.d, handle: hit.handle, start, p1: { ...hit.d.p1 }, p2: { ...hit.d.p2 } };
+    this.drag = { moved: false, d: hit.d, handle: hit.handle, start, p1: { ...hit.d.p1 }, p2: { ...hit.d.p2 } };
     this.cell.chartEl.setPointerCapture(e.pointerId);
   }
 
@@ -292,6 +309,7 @@ class DrawingLayer {
       const p = this.point(pt);
       if (!p) return;
       const g = this.drag, d = g.d;
+      if (!g.moved) { g.moved = true; Drawings.checkpoint(); }   // a click that only selects isn't undoable
       if (g.handle === 1) d.p1 = p;
       else if (g.handle === 2) d.p2 = p;
       else {

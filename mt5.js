@@ -19,6 +19,8 @@ const Mt5 = (() => {
 
   const status = () => get("/api/status");
   const symbols = () => get("/api/symbols");
+  const info = symbol => get("/api/info?symbol=" + encodeURIComponent(symbol));
+  const search = text => get("/api/search?q=" + encodeURIComponent(text));
 
   // Bars oldest first, times in UTC seconds. `to` loads history before that time.
   function candles(symbol, tf, { count = 500, to } = {}) {
@@ -49,5 +51,5 @@ const Mt5 = (() => {
     return { stop() { stopped = true; clearTimeout(timer); if (es) es.close(); } };
   }
 
-  return { configure, status, symbols, candles, streamTicks };
+  return { configure, status, symbols, info, search, candles, streamTicks };
 })();
