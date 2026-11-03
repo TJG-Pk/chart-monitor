@@ -7,7 +7,8 @@ if not exist .venv\Scripts\python.exe (
   py -3 -m venv .venv || python -m venv .venv || goto :nopython
   .venv\Scripts\python.exe -m pip install --disable-pip-version-check -q -r requirements.txt || goto :fail
 )
-start "" http://localhost:8000
+title Chart Monitor bridge
+rem bridge.py เปิดเบราว์เซอร์ให้เองเมื่อพร้อม
 .venv\Scripts\python.exe bridge.py %*
 pause
 exit /b
