@@ -25,6 +25,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import MetaTrader5 as mt5
+import numpy as np
 
 # ===== ตั้งค่า (แก้ตรงนี้ได้) =====
 # ชื่อที่หน้าเว็บใช้ -> ชื่อที่จะลองหาใน MT5 (หาแบบขึ้นต้นด้วย จึงเจอ XAUUSDm, XAUUSD.pro ด้วย)
@@ -44,7 +45,10 @@ TIMEFRAMES = {
     "M1": mt5.TIMEFRAME_M1, "M3": mt5.TIMEFRAME_M3, "M5": mt5.TIMEFRAME_M5, "M15": mt5.TIMEFRAME_M15,
     "M30": mt5.TIMEFRAME_M30, "H1": mt5.TIMEFRAME_H1, "H4": mt5.TIMEFRAME_H4, "D1": mt5.TIMEFRAME_D1,
 }
+# MT5 has no bars shorter than M1; these are built from tick history instead.
+SECOND_TIMEFRAMES = {"S10": 10, "S15": 15, "S30": 30}
 MAX_COUNT = 5000
+MAX_TICK_LOOKBACK = 4 * 86400  # seconds bars: look back at most 4 days of ticks (covers a weekend)
 
 # The MetaTrader5 module is not documented as thread-safe; every call goes through this lock.
 mt5_lock = threading.Lock()
@@ -153,9 +157,11 @@ class Bridge:
         sym = self.symbols.get(display)
         if not sym:
             raise LookupError("ไม่พบสัญลักษณ์ %s ใน MT5" % display)
-        if tf not in TIMEFRAMES:
+        if tf not in TIMEFRAMES and tf not in SECOND_TIMEFRAMES:
             raise LookupError("ไม่รองรับ timeframe %s" % tf)
         count = max(1, min(int(count), MAX_COUNT))
+        if tf in SECOND_TIMEFRAMES:
+            return self.second_candles(sym["name"], SECOND_TIMEFRAMES[tf], count, to_utc)
         with mt5_lock:
             if to_utc:
                 # Bars strictly before `to`: MT5 includes the bar opening at date_from, so step back 1s.
@@ -171,6 +177,24 @@ class Bridge:
             "open": float(r["open"]), "high": float(r["high"]), "low": float(r["low"]),
             "close": float(r["close"]), "volume": int(r["tick_volume"]),
         } for r in rates]
+
+    def second_candles(self, name, sec, count, to_utc=None):
+        """Aggregate bid ticks into `sec`-second bars. Starts with a window of about 2x the
+        bars asked for and widens it when the market was closed for part of that time."""
+        off = self.offset()
+        end = (int(to_utc) if to_utc else int(time.time()) + 1) + off   # server time, exclusive
+        span = count * sec * 2
+        while True:
+            start = max(end - span, end - MAX_TICK_LOOKBACK)
+            with mt5_lock:
+                ticks = mt5.copy_ticks_range(name, start, end, mt5.COPY_TICKS_INFO)
+            bars = ticks_to_bars(ticks, sec, end)
+            if len(bars) >= count or end - start >= MAX_TICK_LOOKBACK:
+                break
+            span *= 4
+        for b in bars:
+            b["time"] -= off
+        return bars[-count:]
 
     # ---------- live ticks ----------
     def add_listener(self, q):
@@ -190,25 +214,64 @@ class Bridge:
             except queue.Full:
                 pass  # a stalled browser tab must not block the tick loop
 
+    def emit(self, display, time_msc, bid, ask):
+        # Charts are built from bid prices, same as MT5's own charts.
+        if bid > 0:
+            self.broadcast({"symbol": display, "time": time_msc / 1000 - self.offset(),
+                            "bid": float(bid), "ask": float(ask), "price": float(bid)})
+
     def tick_loop(self):
-        last_seen = {}
+        """Forward every tick, not just the latest one per poll, so short bars built in the
+        browser get the true high and low."""
+        last_msc = {}
         while True:
             if not self.ensure_connected():
                 time.sleep(5)
                 continue
             for display, sym in list(self.symbols.items()):
+                since = last_msc.get(display)
                 with mt5_lock:
-                    t = mt5.symbol_info_tick(sym["name"])
-                if t is None or t.time_msc == last_seen.get(display):
+                    if since is None:
+                        first = mt5.symbol_info_tick(sym["name"])
+                    else:
+                        ticks = mt5.copy_ticks_from(sym["name"], since // 1000, 1000, mt5.COPY_TICKS_INFO)
+                if since is None:
+                    if first is not None and first.time_msc:
+                        last_msc[display] = first.time_msc
+                        self.update_offset(first.time_msc / 1000)
+                        self.emit(display, first.time_msc, first.bid, first.ask)
                     continue
-                last_seen[display] = t.time_msc
-                self.update_offset(t.time_msc / 1000)
-                if t.bid <= 0:
+                if ticks is None or not len(ticks):
                     continue
-                # Charts are built from bid prices, same as MT5's own charts.
-                self.broadcast({"symbol": display, "time": t.time_msc / 1000 - self.offset(),
-                                "bid": t.bid, "ask": t.ask, "price": t.bid})
+                new = ticks[ticks["time_msc"] > since]
+                if not len(new):
+                    continue
+                last_msc[display] = int(new["time_msc"][-1])
+                self.update_offset(last_msc[display] / 1000)
+                for r in new:
+                    self.emit(display, int(r["time_msc"]), r["bid"], r["ask"])
             time.sleep(TICK_POLL_SECONDS)
+
+
+def ticks_to_bars(ticks, sec, end_server):
+    """Bid ticks (numpy records from copy_ticks_*) -> OHLC bars in server time, oldest first.
+    Volume is the tick count, like MT5's tick_volume."""
+    if ticks is None or not len(ticks):
+        return []
+    ms, bid = ticks["time_msc"], ticks["bid"]
+    keep = (bid > 0) & (ms < end_server * 1000)
+    ms, bid = ms[keep], bid[keep]
+    if not len(ms):
+        return []
+    bucket = (ms // 1000 // sec) * sec
+    starts = np.flatnonzero(np.r_[True, bucket[1:] != bucket[:-1]])
+    ends = np.r_[starts[1:], len(bid)]
+    highs = np.maximum.reduceat(bid, starts)
+    lows = np.minimum.reduceat(bid, starts)
+    return [{
+        "time": int(bucket[s]), "open": float(bid[s]), "high": float(h), "low": float(l),
+        "close": float(bid[e - 1]), "volume": int(e - s),
+    } for s, e, h, l in zip(starts, ends, highs, lows)]
 
 
 class Handler(SimpleHTTPRequestHandler):
