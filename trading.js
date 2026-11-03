@@ -5,6 +5,12 @@ const Trading = (() => {
   let snap = null;                 // last /api/trading answer, or { error }
   let timer = 0;
   const listeners = new Set();
+  const log = [];                  // every action sent from this page, newest first
+
+  function addLog(ok, text) {
+    log.unshift({ time: Date.now(), ok, text });
+    if (log.length > 200) log.pop();
+  }
 
   async function refresh() {
     try { snap = await Mt5.trading(); } catch (e) { snap = { error: e.message }; }
@@ -14,10 +20,12 @@ const Trading = (() => {
   async function act(path, body, okText) {
     try {
       const r = await Mt5.post(path, body);
+      addLog(true, okText);
       toast("✅ " + okText);
       refresh();
       return r;
     } catch (e) {
+      addLog(false, okText + " — " + e.message);
       toast("❌ " + e.message);
       throw e;
     }
@@ -28,6 +36,7 @@ const Trading = (() => {
     stop() { clearInterval(timer); timer = 0; },
     refresh,
     get: () => snap,
+    log: () => log,
     onChange(fn) { listeners.add(fn); return () => listeners.delete(fn); },
     place: (o, text) => act("/api/order", o, text),
     modify: (o, text) => act("/api/modify", o, text),
@@ -254,202 +263,432 @@ class TradeLayer {
   }
 }
 
-// ---------- order panel ----------
-const TradePanel = (() => {
-  const el = () => document.getElementById("tradePanel");
+// ---------- order ticket (right panel) ----------
+// Side tabs, order type tabs, lot stepper, TP/SL as price / points / money (any one can be
+// typed, the others follow), order info and a submit button naming the exact order.
+const OrderTicket = (() => {
+  const t = { side: "buy", type: "market", tpOn: false, slOn: false, tp: 0, sl: 0 };
   let built = false;
+  const $ = id => document.getElementById(id);
 
   function build() {
-    el().innerHTML = `
-      <div class="whead"><b>เทรด</b><span class="spacer"></span>
-        <button type="button" id="openJournal" title="บันทึกการเทรด">📒 Journal</button>
-        <button type="button" id="openRisk" title="จำกัดความเสี่ยง">⚙</button></div>
-      <div id="tpAccount" class="tp-account"></div>
-      <div id="tpBlocked" class="tp-blocked" hidden></div>
-      <div class="tp-form">
-        <div class="tp-sym" id="tpSymbol"></div>
-        <div class="tp-sides">
-          <button type="button" class="sell" id="tpSell">SELL<b id="tpBid">—</b></button>
-          <button type="button" class="buy" id="tpBuy">BUY<b id="tpAsk">—</b></button>
+    $("tradePanel").innerHTML = `
+      <div class="rp-head"><b id="otSymbol">—</b><span class="tb-spacer"></span>
+        <button type="button" class="tb-btn small" id="openRisk" title="จำกัดความเสี่ยง">⚙ ความเสี่ยง</button></div>
+      <div class="ot">
+        <div class="ot-acct" id="otAccount">กำลังโหลด…</div>
+        <div class="ot-blocked" id="otBlocked" hidden></div>
+        <div class="ot-sides">
+          <button type="button" class="sell" data-side="sell">Sell<b id="otBid">—</b></button>
+          <button type="button" class="buy" data-side="buy">Buy<b id="otAsk">—</b></button>
         </div>
-        <div class="tp-row">
-          <label>Lot <input type="number" id="tpVolume" min="0.01" step="0.01" value="0.01"></label>
-          <label>ประเภท <select id="tpType"><option value="market">Market</option><option value="limit">Limit</option><option value="stop">Stop</option></select></label>
+        <div class="ot-tabs">
+          <button type="button" data-type="market">Market</button>
+          <button type="button" data-type="limit">Limit</button>
+          <button type="button" data-type="stop">Stop</button>
         </div>
-        <div class="tp-row" id="tpPriceRow" hidden><label>ราคา <input type="number" id="tpPrice" step="any"></label></div>
-        <div class="tp-row">
-          <label>SL <input type="number" id="tpSL" step="any" placeholder="ไม่ตั้ง"></label>
-          <label>TP <input type="number" id="tpTP" step="any" placeholder="ไม่ตั้ง"></label>
+        <div class="ot-field" id="otPriceField">ราคา
+          <div class="ot-stepper"><button type="button" data-step="price:-1">−</button>
+            <input type="number" id="otPrice" step="any"><button type="button" data-step="price:1">+</button></div>
+          <span class="hint" id="otPriceHint"></span>
         </div>
-        <div class="tp-risk hint" id="tpRiskText"></div>
-        <label class="tp-check"><input type="checkbox" id="tpConfirm"> ถามยืนยันก่อนส่งคำสั่ง</label>
-      </div>
-      <div class="tp-list" id="tpPositions"></div>`;
-    const $ = id => document.getElementById(id);
-    $("tpConfirm").checked = confirmTrades();
-    $("tpConfirm").addEventListener("change", e => { try { localStorage.setItem(CONFIRM_KEY, e.target.checked ? "1" : "0"); } catch (err) {} });
-    $("tpType").addEventListener("change", () => { $("tpPriceRow").hidden = $("tpType").value === "market"; updateRiskText(); });
-    for (const id of ["tpVolume", "tpSL", "tpTP", "tpPrice"]) $(id).addEventListener("input", updateRiskText);
-    $("tpBuy").addEventListener("click", () => submit("buy"));
-    $("tpSell").addEventListener("click", () => submit("sell"));
-    $("openJournal").addEventListener("click", openJournal);
+        <div class="ot-field">จำนวน (lot)
+          <div class="ot-stepper"><button type="button" data-step="vol:-1">−</button>
+            <input type="number" id="otVolume" min="0.01" step="0.01" value="0.01"><button type="button" data-step="vol:1">+</button></div>
+        </div>
+        ${["tp", "sl"].map(k => `
+        <div class="ot-exit">
+          <label class="ot-exit-head"><span><input type="checkbox" id="ot_${k}On"> ${k === "tp" ? "Take Profit" : "Stop Loss"}</span>
+            <span class="hint" id="ot_${k}Hint"></span></label>
+          <div class="ot-exit-body" id="ot_${k}Body" hidden>
+            <label>ราคา<input type="number" step="any" data-exit="${k}" data-unit="price"></label>
+            <label>Points<input type="number" step="1" data-exit="${k}" data-unit="points"></label>
+            <label id="ot_${k}Cur">USD<input type="number" step="any" data-exit="${k}" data-unit="money"></label>
+          </div>
+        </div>`).join("")}
+        <div class="ot-info" id="otInfo"></div>
+        <button type="button" class="ot-submit" id="otSubmit"></button>
+        <label class="ot-check"><input type="checkbox" id="otConfirm"> ถามยืนยันก่อนส่งคำสั่ง</label>
+      </div>`;
+    $("tradePanel").querySelectorAll("[data-side]").forEach(b => b.addEventListener("click", () => { t.side = b.dataset.side; resetExits(); update(); }));
+    $("tradePanel").querySelectorAll("[data-type]").forEach(b => b.addEventListener("click", () => {
+      t.type = b.dataset.type;
+      if (t.type !== "market" && !num("otPrice")) $("otPrice").value = marketPrice() || "";
+      update();
+    }));
+    $("tradePanel").querySelectorAll("[data-step]").forEach(b => b.addEventListener("click", () => {
+      const [what, dir] = b.dataset.step.split(":"), info = brokerSymbols[activeSymbol()] || {};
+      if (what === "vol") {
+        const step = info.volumeStep || 0.01;
+        $("otVolume").value = Math.max(info.volumeMin || step, +(num("otVolume") + dir * step).toFixed(4));
+      } else {
+        const step = Math.pow(10, -(info.digits || 2)) * 10;
+        $("otPrice").value = +((num("otPrice") || marketPrice()) + dir * step).toFixed(info.digits || 2);
+      }
+      update();
+    }));
+    for (const id of ["otVolume", "otPrice"]) $(id).addEventListener("input", update);
+    for (const k of ["tp", "sl"]) {
+      $(`ot_${k}On`).addEventListener("change", e => {
+        t[k + "On"] = e.target.checked;
+        if (t[k + "On"] && !t[k]) t[k] = defaultExit(k);
+        update();
+      });
+    }
+    $("tradePanel").querySelectorAll("[data-exit]").forEach(inp => inp.addEventListener("input", () => {
+      const v = parseFloat(inp.value);
+      if (!isFinite(v)) return;
+      t[inp.dataset.exit] = fromUnit(inp.dataset.exit, inp.dataset.unit, v);
+      update(inp);
+    }));
+    $("otConfirm").checked = confirmTrades();
+    $("otConfirm").addEventListener("change", e => { try { localStorage.setItem(CONFIRM_KEY, e.target.checked ? "1" : "0"); } catch (err) {} });
+    $("otSubmit").addEventListener("click", submit);
     $("openRisk").addEventListener("click", openRisk);
     built = true;
   }
 
-  function num(id) { const v = parseFloat(document.getElementById(id).value); return isFinite(v) && v > 0 ? v : 0; }
-
-  // Entry price the order would get: the typed price for limit/stop, else the live ask/bid.
-  function entryPrice(side) {
-    const type = document.getElementById("tpType").value;
-    if (type !== "market") return num("tpPrice");
+  const num = id => { const v = parseFloat($(id).value); return isFinite(v) && v > 0 ? v : 0; };
+  const info = () => brokerSymbols[activeSymbol()] || {};
+  function marketPrice() {
     const q = lastPrices[activeSymbol()];
-    return q ? (side === "buy" ? q.ask : q.bid) : 0;
+    return q ? (t.side === "buy" ? q.ask : q.bid) : 0;
+  }
+  const entry = () => t.type === "market" ? marketPrice() : num("otPrice");
+  const dir = () => (t.side === "buy" ? 1 : -1);
+
+  // Starting TP/SL: 1% of price away, on the right side for the order's direction.
+  function defaultExit(k) {
+    const e = entry(), d = info().digits || 2;
+    if (!e) return 0;
+    const off = e * 0.01 * (k === "tp" ? 1 : -1) * dir();
+    return +(e + off).toFixed(d);
+  }
+  function resetExits() {
+    if (t.tpOn) t.tp = defaultExit("tp");
+    if (t.slOn) t.sl = defaultExit("sl");
   }
 
-  function updateRiskText() {
-    const sym = activeSymbol(), vol = num("tpVolume"), sl = num("tpSL"), tp = num("tpTP");
-    const parts = [];
-    for (const side of ["buy", "sell"]) {
-      const entry = entryPrice(side);
-      if (!entry) continue;
-      const bits = [];
-      if (sl) { const m = moneyBetween(sym, side, vol, entry, sl); if (m !== null) bits.push("SL " + fmtMoney(m)); }
-      if (tp) { const m = moneyBetween(sym, side, vol, entry, tp); if (m !== null) bits.push("TP " + fmtMoney(m)); }
-      if (bits.length) parts.push(side.toUpperCase() + ": " + bits.join(" / "));
+  function toUnit(k, unit) {
+    const e = entry(), i = info(), p = t[k];
+    if (!e || !p) return "";
+    if (unit === "price") return p.toFixed(i.digits || 2);
+    if (unit === "points") return Math.round(Math.abs(p - e) / (i.point || 0.01));
+    const m = moneyBetween(activeSymbol(), t.side, num("otVolume"), e, p);
+    return m === null ? "" : m.toFixed(2);
+  }
+
+  function fromUnit(k, unit, v) {
+    const e = entry(), i = info(), d = i.digits || 2;
+    if (unit === "price") return v;
+    const sign = (k === "tp" ? 1 : -1) * dir();
+    if (unit === "points") return +(e + sign * Math.abs(v) * (i.point || 0.01)).toFixed(d);
+    // money -> price distance
+    const per = moneyBetween(activeSymbol(), "buy", num("otVolume"), 0, i.tickSize || 0.01);
+    if (!per) return t[k];
+    return +(e + sign * Math.abs(v) / per * (i.tickSize || 0.01)).toFixed(d);
+  }
+
+  function update(skip) {
+    if (!built) build();
+    const s = Trading.get(), sym = activeSymbol(), i = info(), q = lastPrices[sym];
+    $("otSymbol").textContent = sym;
+    if (q && i.digits !== undefined) { $("otBid").textContent = q.bid.toFixed(i.digits); $("otAsk").textContent = q.ask.toFixed(i.digits); }
+    $("tradePanel").querySelectorAll("[data-side]").forEach(b => b.classList.toggle("on", b.dataset.side === t.side));
+    $("tradePanel").querySelectorAll("[data-type]").forEach(b => b.classList.toggle("on", b.dataset.type === t.type));
+    $("otPriceField").hidden = t.type === "market";
+    if (i.volumeStep) { $("otVolume").step = i.volumeStep; $("otVolume").min = i.volumeMin; }
+    if (t.type !== "market" && q) {
+      const e = num("otPrice"), ref = marketPrice();
+      const ok = t.type === "limit" ? (t.side === "buy" ? e < ref : e > ref) : (t.side === "buy" ? e > ref : e < ref);
+      $("otPriceHint").textContent = e ? `${Math.round(Math.abs(e - ref) / (i.point || 0.01))} points จากราคาตลาด` +
+        (ok ? "" : ` — ${t.type} ${t.side} ควร${(t.type === "limit") === (t.side === "buy") ? "ต่ำ" : "สูง"}กว่าราคาตลาด`) : "";
     }
-    document.getElementById("tpRiskText").textContent = parts.join("   ");
+    const cur = s && s.account ? s.account.currency : "USD";
+    for (const k of ["tp", "sl"]) {
+      $(`ot_${k}On`).checked = t[k + "On"];
+      $(`ot_${k}Body`).hidden = !t[k + "On"];
+      $(`ot_${k}Cur`).firstChild.textContent = cur;
+      $("tradePanel").querySelectorAll(`[data-exit="${k}"]`).forEach(inp => { if (inp !== skip) inp.value = toUnit(k, inp.dataset.unit); });
+      const m = t[k + "On"] ? moneyBetween(sym, t.side, num("otVolume"), entry(), t[k]) : null;
+      $(`ot_${k}Hint`).textContent = m === null ? "" : fmtMoney(m) + " " + cur;
+    }
+
+    // order info
+    const vol = num("otVolume"), e = entry();
+    const perPoint = moneyBetween(sym, "buy", vol, 0, i.point || 0.01);
+    const risk = t.slOn ? moneyBetween(sym, t.side, vol, e, t.sl) : null;
+    const reward = t.tpOn ? moneyBetween(sym, t.side, vol, e, t.tp) : null;
+    const bal = s && s.account ? s.account.balance : 0;
+    const rows = [
+      ["ราคาเข้า", e ? e.toFixed(i.digits || 2) + (t.type === "market" ? " (ตลาด)" : "") : "—"],
+      ["มูลค่าต่อ 1 point", perPoint === null ? "—" : perPoint.toFixed(2) + " " + cur],
+      ["ความเสี่ยง (SL)", risk === null ? "—" : fmtMoney(risk) + (bal ? ` (${(risk / bal * 100).toFixed(2)}%)` : "")],
+      ["ผลตอบแทน (TP)", reward === null ? "—" : fmtMoney(reward)],
+      ["Risk : Reward", risk && reward ? "1 : " + (Math.abs(reward / risk)).toFixed(2) : "—"]
+    ];
+    $("otInfo").innerHTML = rows.map(([a, b]) => `<span>${a}</span><b>${b}</b>`).join("");
+
+    const submit = $("otSubmit");
+    submit.className = "ot-submit " + t.side;
+    submit.textContent = `${t.side === "buy" ? "Buy" : "Sell"} ${vol || "—"} ${sym} ${{ market: "MKT", limit: "LMT", stop: "STP" }[t.type]}` +
+      (t.type !== "market" && num("otPrice") ? " @ " + num("otPrice") : "");
+
+    if (!s || s.error) { $("otAccount").textContent = s ? s.error : "กำลังโหลด…"; submit.disabled = true; return; }
+    const a = s.account;
+    $("otAccount").innerHTML = `<span class="badge ${a.mode}">${a.mode.toUpperCase()}</span> #${a.login} · ${escapeHtml(a.server)}<br>
+      Balance <b>${a.balance.toFixed(2)}</b> · Equity <b>${a.equity.toFixed(2)}</b> ${escapeHtml(cur)}`;
+    $("otBlocked").hidden = s.canTrade;
+    $("otBlocked").textContent = s.blockedReason || "";
+    submit.disabled = !s.canTrade;
   }
 
-  async function submit(side) {
-    const sym = activeSymbol(), type = document.getElementById("tpType").value;
-    const order = { symbol: sym, side, type, volume: num("tpVolume"), sl: num("tpSL"), tp: num("tpTP") };
-    if (type !== "market") order.price = num("tpPrice");
+  async function submit() {
+    const sym = activeSymbol();
+    const order = { symbol: sym, side: t.side, type: t.type, volume: num("otVolume"),
+      sl: t.slOn ? t.sl : 0, tp: t.tpOn ? t.tp : 0 };
+    if (t.type !== "market") order.price = num("otPrice");
     const s = Trading.get();
     const acct = s && s.account ? `[${s.account.mode.toUpperCase()} #${s.account.login}] ` : "";
-    const text = `${acct}${side.toUpperCase()} ${type.toUpperCase()} ${order.volume} ${sym}` +
-      (order.price ? ` @ ${order.price}` : "") + (order.sl ? ` SL ${order.sl}` : "") + (order.tp ? ` TP ${order.tp}` : "");
+    const text = acct + $("otSubmit").textContent + (order.sl ? ` SL ${order.sl}` : "") + (order.tp ? ` TP ${order.tp}` : "");
     if (!confirmTrade(text)) return;
     try { await Trading.place(order, text); } catch (e) {}
   }
 
-  function render(s) {
-    if (!built) build();
-    const $ = id => document.getElementById(id);
-    const sym = activeSymbol();
-    $("tpSymbol").textContent = sym;
-    const info = brokerSymbols[sym];
-    if (info) { $("tpVolume").step = info.volumeStep || 0.01; $("tpVolume").min = info.volumeMin || 0.01; }
-    if (!s || s.error) {
-      $("tpAccount").textContent = s ? s.error : "กำลังโหลด…";
-      return;
-    }
-    const a = s.account, cur = a.currency;
-    const limit = s.risk.dailyLossLimit;
-    $("tpAccount").innerHTML = `<span class="badge ${a.mode}">${a.mode.toUpperCase()}</span> #${a.login}
-      <div>Balance <b>${a.balance.toFixed(2)}</b> · Equity <b>${a.equity.toFixed(2)}</b> ${escapeHtml(cur)}</div>
-      <div>วันนี้ <b class="${s.today.total >= 0 ? "up" : "down"}">${fmtMoney(s.today.total)}</b>
-        (ปิดแล้ว ${fmtMoney(s.today.closed)} · ค้าง ${fmtMoney(s.today.open)})${limit > 0 ? ` · จำกัด -${limit}` : ""}</div>`;
-    $("tpBlocked").hidden = s.canTrade;
-    $("tpBlocked").textContent = s.blockedReason || "";
-    $("tpBuy").disabled = $("tpSell").disabled = !s.canTrade;
+  // The SELL / BUY buttons on each chart: a market order of the chart's lot, no SL/TP.
+  async function quick(side, symbol, volume) {
+    const s = Trading.get();
+    if (!s || !s.canTrade) { toast("❌ " + (s && s.blockedReason ? s.blockedReason : "ยังส่งคำสั่งไม่ได้")); return; }
+    const text = `[${s.account.mode.toUpperCase()} #${s.account.login}] ${side === "buy" ? "Buy" : "Sell"} ${volume} ${symbol} MKT`;
+    if (!confirmTrade(text)) return;
+    try { await Trading.place({ symbol, side, type: "market", volume, sl: 0, tp: 0 }, text); } catch (e) {}
+  }
 
-    const list = $("tpPositions");
+  function openRisk() {
+    const s = Trading.get();
+    const risk = s && s.risk ? s.risk : { dailyLossLimit: 0, maxVolume: 1 };
+    $("riskLoss").value = risk.dailyLossLimit;
+    $("riskVolume").value = risk.maxVolume;
+    $("riskDialog").showModal();
+  }
+
+  function init() {
+    $("cancelRisk").addEventListener("click", () => $("riskDialog").close());
+    $("riskForm").addEventListener("submit", async e => {
+      e.preventDefault();
+      try {
+        await Trading.setRisk({ dailyLossLimit: parseFloat($("riskLoss").value) || 0, maxVolume: parseFloat($("riskVolume").value) || 0 });
+        $("riskDialog").close();
+      } catch (err) {}
+    });
+    Trading.onChange(() => update());
+  }
+
+  return { init, update: () => update(), quick, setSide(side) { t.side = side; resetExits(); update(); } };
+})();
+
+// ---------- account manager (bottom panel) ----------
+const AccountManager = (() => {
+  const TABS = { positions: "Positions", orders: "Orders", history: "History", account: "Account", log: "Log" };
+  const TAB_KEY = "chartMonitorBottomTab";
+  let tab = "positions";
+  try { tab = localStorage.getItem(TAB_KEY) || "positions"; } catch (e) {}
+  if (!TABS[tab]) tab = "positions";
+  let historyDays = 30, history = null, lastKey = "";
+  const $ = id => document.getElementById(id);
+  const cur = s => s && s.account ? s.account.currency : "";
+  const dt = t => { const s = t + TZ_SHIFT; return fmtDate(s) + " " + fmtTime(s); };
+
+  function renderTabs(s) {
+    const counts = { positions: s && s.positions ? s.positions.length : 0, orders: s && s.orders ? s.orders.length : 0 };
+    let acct = "";
+    if (s && s.account) {
+      const a = s.account;
+      acct = `<div class="acct"><span><span class="badge ${a.mode}">${a.mode.toUpperCase()}</span></span>
+        <span>Balance <b>${a.balance.toFixed(2)}</b></span><span>Equity <b>${a.equity.toFixed(2)}</b></span>
+        <span>วันนี้ <b class="${s.today.total >= 0 ? "up" : "down"}">${fmtMoney(s.today.total)}</b></span>
+        <span>Margin <b>${a.margin.toFixed(2)}</b></span><span>Free <b>${a.freeMargin.toFixed(2)}</b></span></div>`;
+    }
+    $("bpTabs").innerHTML = Object.entries(TABS).map(([k, label]) =>
+      `<button type="button" data-tab="${k}" class="${k === tab ? "on" : ""}">${label}${counts[k] ? ` (${counts[k]})` : ""}</button>`).join("") + acct;
+    $("bpTabs").querySelectorAll("[data-tab]").forEach(b => b.addEventListener("click", () => {
+      tab = b.dataset.tab;
+      try { localStorage.setItem(TAB_KEY, tab); } catch (e) {}
+      lastKey = "";
+      render(Trading.get(), true);
+    }));
+  }
+
+  // Re-render the table only when its rows change, so a SL/TP box being typed in keeps its
+  // focus; otherwise just refresh the live numbers.
+  function render(s, force) {
+    renderTabs(s);
+    const body = $("bpBody");
+    if (tab === "history") { if (force || !history) loadHistory(); return; }
+    if (tab === "log") { renderLog(); return; }
+    if (!s || s.error) { body.innerHTML = `<div class="bp-empty">${escapeHtml(s ? s.error : "กำลังโหลด…")}</div>`; return; }
+    if (tab === "account") { renderAccount(s); return; }
+    const list = tab === "positions" ? s.positions : s.orders;
+    const key = tab + ":" + list.map(x => `${x.ticket}/${x.sl}/${x.tp}/${x.price}`).join(",");
+    const editing = body.contains(document.activeElement) && document.activeElement.tagName === "INPUT";
+    if (!force && key === lastKey) { updateLive(s); return; }
+    if (!force && editing) return;
+    lastKey = key;
+    body.innerHTML = (s.canTrade ? "" : `<div class="bp-blocked">${escapeHtml(s.blockedReason || "")}</div>`) +
+      (tab === "positions" ? positionsTable(s) : ordersTable(s));
+    wire(s);
+  }
+
+  function editBox(it, field) {
+    return `<input class="cell-edit" type="number" step="any" data-edit="${field}" data-ticket="${it.ticket}" value="${it[field] || ""}" placeholder="—">`;
+  }
+
+  function positionsTable(s) {
+    if (!s.positions.length) return `<div class="bp-empty">ไม่มี position ที่เปิดอยู่</div>`;
     const total = s.positions.reduce((t, p) => t + p.profit, 0);
-    let html = `<div class="tp-head">Positions (${s.positions.length})<span class="${total >= 0 ? "up" : "down"}">${fmtMoney(total)}</span></div>`;
-    for (const p of s.positions) {
-      html += `<div class="tp-item"><span><b>${escapeHtml(p.symbol)}</b> <span class="${p.side === "buy" ? "up" : "down"}">${p.side.toUpperCase()}</span> ${p.volume}
-        @ ${p.price}<br><span class="hint">SL ${p.sl || "—"} · TP ${p.tp || "—"}${p.ours ? "" : " · เปิดจาก MT5"}</span></span>
-        <span class="${p.profit >= 0 ? "up" : "down"}">${fmtMoney(p.profit)}</span>
-        <button type="button" class="icon" data-close="${p.ticket}" title="ปิด position">✕</button></div>`;
+    return `<div class="bp-tools"><span>รวม <b class="${total >= 0 ? "up" : "down"}">${fmtMoney(total)} ${escapeHtml(cur(s))}</b></span>
+      <span class="spacer"></span><button type="button" class="row-btn" id="closeAll">ปิดทั้งหมด</button></div>
+      <table><thead><tr><th>สัญลักษณ์</th><th>ฝั่ง</th><th class="num">Lot</th><th class="num">ราคาเข้า</th><th class="num">ราคาล่าสุด</th>
+      <th>Stop Loss</th><th>Take Profit</th><th class="num">กำไร/ขาดทุน</th><th>เปิดเมื่อ</th><th></th></tr></thead><tbody>` +
+      s.positions.map(p => `<tr data-ticket="${p.ticket}"><td><a href="#" data-goto="${escapeHtml(p.symbol)}"><b>${escapeHtml(p.symbol)}</b></a></td>
+        <td class="${p.side === "buy" ? "up" : "down"}">${p.side.toUpperCase()}</td><td class="num">${p.volume}</td>
+        <td class="num">${p.price}</td><td class="num last">${p.current}</td><td>${editBox(p, "sl")}</td><td>${editBox(p, "tp")}</td>
+        <td class="num pl ${p.profit >= 0 ? "up" : "down"}">${fmtMoney(p.profit)}</td><td>${dt(p.time)}${p.ours ? "" : " · MT5"}</td>
+        <td><button type="button" class="row-btn" data-close="${p.ticket}">ปิด ✕</button></td></tr>`).join("") + `</tbody></table>`;
+  }
+
+  function ordersTable(s) {
+    if (!s.orders.length) return `<div class="bp-empty">ไม่มี order ที่รออยู่</div>`;
+    return `<div class="bp-tools"><span class="spacer"></span><button type="button" class="row-btn" id="cancelAll">ยกเลิกทั้งหมด</button></div>
+      <table><thead><tr><th>สัญลักษณ์</th><th>ฝั่ง</th><th>ประเภท</th><th class="num">Lot</th><th>ราคา</th><th>Stop Loss</th><th>Take Profit</th>
+      <th>ตั้งเมื่อ</th><th></th></tr></thead><tbody>` +
+      s.orders.map(o => `<tr data-ticket="${o.ticket}"><td><a href="#" data-goto="${escapeHtml(o.symbol)}"><b>${escapeHtml(o.symbol)}</b></a></td>
+        <td class="${o.side === "buy" ? "up" : "down"}">${o.side.toUpperCase()}</td><td>${o.type.toUpperCase()}</td><td class="num">${o.volume}</td>
+        <td>${editBox(o, "price")}</td><td>${editBox(o, "sl")}</td><td>${editBox(o, "tp")}</td><td>${dt(o.time)}</td>
+        <td><button type="button" class="row-btn" data-cancel="${o.ticket}">ยกเลิก ✕</button></td></tr>`).join("") + `</tbody></table>`;
+  }
+
+  function updateLive(s) {
+    const body = $("bpBody");
+    for (const p of s.positions || []) {
+      const row = body.querySelector(`tr[data-ticket="${p.ticket}"]`);
+      if (!row) continue;
+      const pl = row.querySelector(".pl"), last = row.querySelector(".last");
+      if (pl) { pl.textContent = fmtMoney(p.profit); pl.className = "num pl " + (p.profit >= 0 ? "up" : "down"); }
+      if (last) last.textContent = p.current;
     }
-    if (s.orders.length) html += `<div class="tp-head">Orders (${s.orders.length})</div>`;
-    for (const o of s.orders) {
-      html += `<div class="tp-item"><span><b>${escapeHtml(o.symbol)}</b> ${o.side.toUpperCase()} ${o.type.toUpperCase()} ${o.volume} @ ${o.price}</span>
-        <span></span><button type="button" class="icon" data-cancel="${o.ticket}" title="ยกเลิก order">✕</button></div>`;
-    }
-    list.innerHTML = html;
-    list.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => {
+  }
+
+  function wire(s) {
+    const body = $("bpBody");
+    body.querySelectorAll("[data-goto]").forEach(a => a.addEventListener("click", e => { e.preventDefault(); setSymbol(a.dataset.goto); }));
+    body.querySelectorAll("[data-close]").forEach(b => b.addEventListener("click", () => {
       const p = s.positions.find(x => x.ticket === +b.dataset.close);
       if (p && confirmTrade(`ปิด ${p.side.toUpperCase()} ${p.volume} ${p.symbol} (#${p.ticket}) ${fmtMoney(p.profit)}`)) {
         Trading.close({ ticket: p.ticket }, `ปิด #${p.ticket} แล้ว`).catch(() => {});
       }
     }));
-    list.querySelectorAll("[data-cancel]").forEach(b => b.addEventListener("click", () => {
+    body.querySelectorAll("[data-cancel]").forEach(b => b.addEventListener("click", () => {
       const o = s.orders.find(x => x.ticket === +b.dataset.cancel);
       if (o && confirmTrade(`ยกเลิก ${o.side.toUpperCase()} ${o.type.toUpperCase()} ${o.volume} ${o.symbol} @ ${o.price}`)) {
         Trading.cancel({ ticket: o.ticket }, `ยกเลิก #${o.ticket} แล้ว`).catch(() => {});
       }
     }));
-    onTick();
+    body.querySelectorAll("[data-edit]").forEach(inp => {
+      const send = () => {
+        const v = parseFloat(inp.value) || 0, field = inp.dataset.edit, ticket = +inp.dataset.ticket;
+        const it = [...s.positions, ...s.orders].find(x => x.ticket === ticket);
+        if (!it || v === (it[field] || 0)) return;
+        const what = { sl: "SL", tp: "TP", price: "ราคา" }[field];
+        if (confirmTrade(`ตั้ง ${what} ของ #${ticket} ${it.symbol} เป็น ${v || "ไม่มี"}`)) {
+          Trading.modify({ ticket, [field]: v }, `แก้ ${what} #${ticket} แล้ว`).catch(() => {}).finally(() => { lastKey = ""; });
+        } else {
+          inp.value = it[field] || "";
+        }
+      };
+      inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); if (e.key === "Escape") { inp.value = ""; inp.blur(); } });
+      inp.addEventListener("change", send);
+    });
+    const closeAll = $("closeAll");
+    if (closeAll) closeAll.addEventListener("click", () => {
+      if (!confirmTrade(`ปิด position ทั้งหมด ${s.positions.length} รายการ`)) return;
+      for (const p of s.positions) Trading.close({ ticket: p.ticket }, `ปิด #${p.ticket} แล้ว`).catch(() => {});
+    });
+    const cancelAll = $("cancelAll");
+    if (cancelAll) cancelAll.addEventListener("click", () => {
+      if (!confirmTrade(`ยกเลิก order ทั้งหมด ${s.orders.length} รายการ`)) return;
+      for (const o of s.orders) Trading.cancel({ ticket: o.ticket }, `ยกเลิก #${o.ticket} แล้ว`).catch(() => {});
+    });
   }
 
-  function onTick() {
-    if (!built) return;
-    const sym = activeSymbol(), q = lastPrices[sym], info = brokerSymbols[sym];
-    if (q && info) {
-      document.getElementById("tpBid").textContent = q.bid.toFixed(info.digits);
-      document.getElementById("tpAsk").textContent = q.ask.toFixed(info.digits);
-    }
-    updateRiskText();
+  function renderAccount(s) {
+    const a = s.account, c = escapeHtml(a.currency);
+    const box = (label, value, cls = "") => `<div><span>${label}</span><b class="${cls}">${value}</b></div>`;
+    $("bpBody").innerHTML = `<div class="bp-summary">
+      ${box("บัญชี", `<span class="badge ${a.mode}">${a.mode.toUpperCase()}</span> #${a.login}`)}
+      ${box("Server", escapeHtml(a.server))}
+      ${box("Balance", a.balance.toFixed(2) + " " + c)}${box("Equity", a.equity.toFixed(2) + " " + c)}
+      ${box("Margin", a.margin.toFixed(2))}${box("Free margin", a.freeMargin.toFixed(2))}
+      ${box("Leverage", "1:" + a.leverage)}
+      ${box("วันนี้ (ปิดแล้ว)", fmtMoney(s.today.closed), s.today.closed >= 0 ? "up" : "down")}
+      ${box("วันนี้ (ค้าง)", fmtMoney(s.today.open), s.today.open >= 0 ? "up" : "down")}
+      ${box("จำกัดขาดทุน/วัน", s.risk.dailyLossLimit ? "-" + s.risk.dailyLossLimit : "ไม่จำกัด")}
+      ${box("Lot สูงสุด", s.risk.maxVolume || "ไม่จำกัด")}
+      ${box("ส่งคำสั่ง", s.canTrade ? "ได้" : "ถูกบล็อก", s.canTrade ? "up" : "down")}</div>` +
+      (s.canTrade ? "" : `<div class="bp-blocked">${escapeHtml(s.blockedReason || "")}</div>`);
   }
 
-  // ---------- risk dialog ----------
-  function openRisk() {
-    const s = Trading.get();
-    const risk = s && s.risk ? s.risk : { dailyLossLimit: 0, maxVolume: 1 };
-    const dlg = document.getElementById("riskDialog");
-    document.getElementById("riskLoss").value = risk.dailyLossLimit;
-    document.getElementById("riskVolume").value = risk.maxVolume;
-    dlg.showModal();
+  function renderLog() {
+    const log = Trading.log();
+    $("bpBody").innerHTML = log.length ? `<table><thead><tr><th>เวลา</th><th>ผล</th><th>รายละเอียด</th></tr></thead><tbody>` +
+      log.map(l => `<tr><td>${new Date(l.time).toLocaleTimeString("th-TH")}</td><td class="${l.ok ? "up" : "down"}">${l.ok ? "สำเร็จ" : "ไม่สำเร็จ"}</td>
+        <td>${escapeHtml(l.text)}</td></tr>`).join("") + `</tbody></table>`
+      : `<div class="bp-empty">ยังไม่มีคำสั่งที่ส่งจากหน้านี้</div>`;
   }
 
-  // ---------- journal ----------
-  async function openJournal() {
-    document.getElementById("journalDialog").showModal();
-    await loadJournal();
-  }
-
-  async function loadJournal() {
-    const days = document.getElementById("journalDays").value;
-    const box = document.getElementById("journalBody");
-    box.innerHTML = `<p class="hint">กำลังโหลด…</p>`;
-    let trades;
-    try { trades = await Mt5.history(days); } catch (e) { box.innerHTML = `<p class="error">${escapeHtml(e.message)}</p>`; return; }
-    journalTrades = trades;
+  // ---------- history / journal ----------
+  async function loadHistory() {
+    const body = $("bpBody");
+    body.innerHTML = `<div class="bp-empty">กำลังโหลด…</div>`;
+    try { history = await Mt5.history(historyDays); } catch (e) { body.innerHTML = `<div class="bp-empty">${escapeHtml(e.message)}</div>`; return; }
+    if (tab !== "history") return;
     let notes = {};
     try { notes = JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); } catch (e) {}
-    const wins = trades.filter(t => t.profit > 0), losses = trades.filter(t => t.profit < 0);
+    const wins = history.filter(t => t.profit > 0), losses = history.filter(t => t.profit < 0);
     const sum = a => a.reduce((s, t) => s + t.profit, 0);
-    const net = sum(trades), gw = sum(wins), gl = -sum(losses);
-    document.getElementById("journalSummary").innerHTML = trades.length ? `
-      <div><span>เทรด</span><b>${trades.length}</b></div>
-      <div><span>Win rate</span><b>${(wins.length / trades.length * 100).toFixed(0)}%</b></div>
-      <div><span>สุทธิ</span><b class="${net >= 0 ? "up" : "down"}">${fmtMoney(net)}</b></div>
-      <div><span>กำไรเฉลี่ย</span><b class="up">${wins.length ? fmtMoney(gw / wins.length) : "—"}</b></div>
-      <div><span>ขาดทุนเฉลี่ย</span><b class="down">${losses.length ? fmtMoney(-gl / losses.length) : "—"}</b></div>
-      <div><span>Profit factor</span><b>${gl ? (gw / gl).toFixed(2) : "—"}</b></div>` : "";
-    if (!trades.length) { box.innerHTML = `<p class="hint">ยังไม่มีเทรดที่ปิดแล้วในช่วงนี้</p>`; return; }
-    const dt = t => { const s = t + TZ_SHIFT; return fmtDate(s) + " " + fmtTime(s); };
-    box.innerHTML = `<table><thead><tr><th>ปิดเมื่อ</th><th>สัญลักษณ์</th><th></th><th>Lot</th><th>เข้า → ออก</th><th>ผล</th><th>โน้ต</th></tr></thead><tbody>` +
-      trades.map(t => `<tr><td>${dt(t.closeTime)}</td><td>${escapeHtml(t.symbol)}</td>
-        <td class="${t.side === "buy" ? "up" : "down"}">${t.side.toUpperCase()}</td><td>${t.volume}</td>
-        <td>${t.openPrice} → ${t.closePrice}</td><td class="${t.profit >= 0 ? "up" : "down"}">${fmtMoney(t.profit)}</td>
-        <td><input data-note="${t.position}" value="${escapeHtml(notes[t.position] || "")}" placeholder="บันทึก…"></td></tr>`).join("") +
-      `</tbody></table>`;
-    box.querySelectorAll("[data-note]").forEach(inp => inp.addEventListener("change", () => {
+    const net = sum(history), gw = sum(wins), gl = -sum(losses);
+    const days = [7, 30, 90, 365].map(d => `<option value="${d}" ${d === historyDays ? "selected" : ""}>${d === 365 ? "1 ปี" : d + " วัน"}</option>`).join("");
+    body.innerHTML = `<div class="bp-tools"><select id="histDays">${days}</select>
+      <span>เทรด <b>${history.length}</b></span>
+      <span>Win rate <b>${history.length ? (wins.length / history.length * 100).toFixed(0) + "%" : "—"}</b></span>
+      <span>สุทธิ <b class="${net >= 0 ? "up" : "down"}">${fmtMoney(net)}</b></span>
+      <span>กำไรเฉลี่ย <b class="up">${wins.length ? fmtMoney(gw / wins.length) : "—"}</b></span>
+      <span>ขาดทุนเฉลี่ย <b class="down">${losses.length ? fmtMoney(-gl / losses.length) : "—"}</b></span>
+      <span>Profit factor <b>${gl ? (gw / gl).toFixed(2) : "—"}</b></span>
+      <span class="spacer"></span><button type="button" class="row-btn" id="histRefresh">↻</button>
+      <button type="button" class="row-btn" id="histCsv">⬇ CSV</button></div>` +
+      (history.length ? `<table><thead><tr><th>ปิดเมื่อ</th><th>สัญลักษณ์</th><th>ฝั่ง</th><th class="num">Lot</th><th class="num">ราคาเข้า</th>
+        <th class="num">ราคาออก</th><th class="num">ผล</th><th>โน้ต</th></tr></thead><tbody>` +
+        history.map(t => `<tr><td>${dt(t.closeTime)}</td><td>${escapeHtml(t.symbol)}</td><td class="${t.side === "buy" ? "up" : "down"}">${t.side.toUpperCase()}</td>
+          <td class="num">${t.volume}</td><td class="num">${t.openPrice}</td><td class="num">${t.closePrice}</td>
+          <td class="num ${t.profit >= 0 ? "up" : "down"}">${fmtMoney(t.profit)}</td>
+          <td><input data-note="${t.position}" value="${escapeHtml(notes[t.position] || "")}" placeholder="บันทึก…" style="width:220px;padding:2px 6px"></td></tr>`).join("") +
+        `</tbody></table>` : `<div class="bp-empty">ยังไม่มีเทรดที่ปิดแล้วในช่วงนี้</div>`);
+    $("histDays").addEventListener("change", e => { historyDays = +e.target.value; loadHistory(); });
+    $("histRefresh").addEventListener("click", loadHistory);
+    $("histCsv").addEventListener("click", exportCsv);
+    body.querySelectorAll("[data-note]").forEach(inp => inp.addEventListener("change", () => {
       notes[inp.dataset.note] = inp.value;
       try { localStorage.setItem(NOTES_KEY, JSON.stringify(notes)); } catch (e) {}
     }));
   }
 
-  let journalTrades = [];
   function exportCsv() {
     let notes = {};
     try { notes = JSON.parse(localStorage.getItem(NOTES_KEY) || "{}"); } catch (e) {}
     const iso = t => new Date(t * 1000).toISOString();
     const rows = [["position", "symbol", "side", "volume", "open_time_utc", "open_price", "close_time_utc", "close_price", "profit", "note"]]
-      .concat(journalTrades.map(t => [t.position, t.symbol, t.side, t.volume, iso(t.openTime), t.openPrice,
+      .concat((history || []).map(t => [t.position, t.symbol, t.side, t.volume, iso(t.openTime), t.openPrice,
         iso(t.closeTime), t.closePrice, t.profit, notes[t.position] || ""]));
     const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
     const a = document.createElement("a");
@@ -459,20 +698,9 @@ const TradePanel = (() => {
   }
 
   function init() {
-    document.getElementById("journalDays").addEventListener("change", loadJournal);
-    document.getElementById("journalCsv").addEventListener("click", exportCsv);
-    document.getElementById("closeJournal").addEventListener("click", () => document.getElementById("journalDialog").close());
-    document.getElementById("cancelRisk").addEventListener("click", () => document.getElementById("riskDialog").close());
-    document.getElementById("riskForm").addEventListener("submit", async e => {
-      e.preventDefault();
-      try {
-        await Trading.setRisk({ dailyLossLimit: parseFloat(document.getElementById("riskLoss").value) || 0,
-                                maxVolume: parseFloat(document.getElementById("riskVolume").value) || 0 });
-        document.getElementById("riskDialog").close();
-      } catch (err) {}
-    });
-    Trading.onChange(render);
+    Trading.onChange(s => { if (tab !== "history") render(s); else renderTabs(s); });
+    render(Trading.get(), true);
   }
 
-  return { init, render: () => render(Trading.get()), onTick };
+  return { init, render: () => render(Trading.get(), true), show(t) { tab = t; render(Trading.get(), true); } };
 })();

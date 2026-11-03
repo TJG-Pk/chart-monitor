@@ -31,8 +31,10 @@ const LAYOUTS = {
 const DEFAULT_STATE = {
   layout: "2x2", style: "candles", scale: "normal",
   link: true,                    // เปลี่ยนสัญลักษณ์ทีเดียวทุกช่อง
-  showWatchlist: true,
-  showTrade: false,
+  rightPage: "watch",            // แผงขวา: watch | order | alerts | objects | null
+  bottomOpen: true,
+  bottomHeight: 240,
+  quickLot: 0.01,
   watchlist: DEFAULT_WATCHLIST,
   overlays: { sessions: true, levels: true, profile: false },
   indicators: [{ id: "stoch", type: "stoch", params: {} }, { id: "rsi", type: "rsi", params: {} }],
@@ -47,8 +49,9 @@ const RESYNC_MS = 60000;       // ดึงแท่งล่าสุดจา�
 // The bridge sends UTC times; shift into Bangkok time (UTC+7, no DST) so the time axis,
 // day boundaries and labels all read in local time.
 const TZ_SHIFT = 7 * 3600;
-const COLORS = { up: "#26a69a", down: "#ef5350", volUp: "rgba(38,166,154,.35)", volDown: "rgba(239,83,80,.35)",
-  band: "#4b5563", ask: "#ef5350", line: "#2f81f7" };
+const COLORS = { up: "#089981", down: "#f23645", volUp: "rgba(8,153,129,.35)", volDown: "rgba(242,54,69,.35)",
+  band: "#434651", ask: "#f23645", line: "#2962ff",
+  bg: "#131722", grid: "#1e222d", text: "#b2b5be", border: "#2a2e39" };
 
 const STATE_KEY = "chartMonitorState";
 const SETTINGS_KEY = "chartMonitorBridge";
@@ -84,7 +87,10 @@ function normalizeState(s) {
   s.indicators = s.indicators.filter(x => INDICATOR_DEFS[x.type]);
   if (!Array.isArray(s.watchlist)) s.watchlist = DEFAULT_WATCHLIST.slice();
   s.overlays = Object.assign({}, DEFAULT_STATE.overlays, s.overlays);
-  delete s.symbol; delete s.intervals; delete s.stoch; delete s.rsi;
+  if (!["watch", "order", "alerts", "objects", null].includes(s.rightPage)) s.rightPage = "watch";
+  if (!(s.quickLot > 0)) s.quickLot = 0.01;
+  s.bottomHeight = Math.max(120, Math.min(600, +s.bottomHeight || 240));
+  delete s.symbol; delete s.intervals; delete s.stoch; delete s.rsi; delete s.showWatchlist; delete s.showTrade;
   return s;
 }
 
@@ -169,6 +175,7 @@ class ChartCell {
     this.sel.addEventListener("change", () => {
       state.cells[index].interval = this.sel.value;
       save();
+      if (index === activeCell) renderIntervalBar();
       this.destroyChart();
       this.iv = INTERVALS[this.sel.value];
       this.start();
@@ -199,7 +206,21 @@ class ChartCell {
     this.legend.className = "legend";
     this.overlay = document.createElement("div");
     this.overlay.className = "overlay";
-    this.chartEl.append(this.legend, this.overlay);
+    // SELL | lot | BUY buttons in the chart's top-left corner: one click = market order.
+    this.quickEl = document.createElement("div");
+    this.quickEl.className = "quick-trade";
+    this.quickEl.innerHTML = `<button type="button" class="q-sell" title="Sell ตลาด">SELL<b>—</b></button>
+      <div class="q-mid"><input type="number" min="0.01" step="0.01" title="lot"><span class="q-spread"></span></div>
+      <button type="button" class="q-buy" title="Buy ตลาด">BUY<b>—</b></button>`;
+    const lotInput = this.quickEl.querySelector("input");
+    lotInput.value = state.quickLot;
+    lotInput.addEventListener("change", () => {
+      const v = parseFloat(lotInput.value);
+      if (v > 0) { state.quickLot = v; save(); for (const c of cells) c.quickEl.querySelector("input").value = v; }
+    });
+    this.quickEl.querySelector(".q-sell").addEventListener("click", () => OrderTicket.quick("sell", this.symbol, state.quickLot));
+    this.quickEl.querySelector(".q-buy").addEventListener("click", () => OrderTicket.quick("buy", this.symbol, state.quickLot));
+    this.chartEl.append(this.legend, this.quickEl, this.overlay);
 
     this.el.append(header, this.chartEl);
     parent.appendChild(this.el);
@@ -218,12 +239,12 @@ class ChartCell {
     const withSeconds = this.iv.seconds < 60;
     const chart = LW.createChart(this.chartEl, {
       autoSize: true,
-      layout: { background: { type: "solid", color: "#161a20" }, textColor: "#9aa4b2", fontSize: 11,
-        panes: { separatorColor: "#262c35" } },
-      grid: { vertLines: { color: "#1c2128" }, horzLines: { color: "#1c2128" } },
+      layout: { background: { type: "solid", color: COLORS.bg }, textColor: COLORS.text, fontSize: 11,
+        panes: { separatorColor: COLORS.border } },
+      grid: { vertLines: { color: COLORS.grid }, horzLines: { color: COLORS.grid } },
       crosshair: { mode: LW.CrosshairMode.Normal },
-      rightPriceScale: { borderColor: "#262c35" },
-      timeScale: { borderColor: "#262c35", timeVisible: !daily, secondsVisible: withSeconds, rightOffset: 5, tickMarkFormatter },
+      rightPriceScale: { borderColor: COLORS.border },
+      timeScale: { borderColor: COLORS.border, timeVisible: !daily, secondsVisible: withSeconds, rightOffset: 5, tickMarkFormatter },
       localization: { timeFormatter: t => daily ? fmtDate(t) : fmtDate(t) + " " + (withSeconds ? fmtTimeSec(t) : fmtTime(t)) }
     });
     const minMove = Math.pow(10, -this.precision);
@@ -351,6 +372,7 @@ class ChartCell {
     this.replay = { idx, timer: 0, speed: this.replay.speed || 1 };
     if (this.askLine) { this.candle.removePriceLine(this.askLine); this.askLine = null; }
     this.spreadEl.textContent = "";
+    this.quickEl.hidden = true;
     this.showLevels();
     this.render(true);
     this.chart.timeScale().scrollToPosition(5, false);
@@ -386,6 +408,7 @@ class ChartCell {
     clearInterval(this.replay.timer);
     this.replay = null;
     if (this.replayBar) { this.replayBar.remove(); this.replayBar = null; }
+    this.quickEl.hidden = false;
     if (redraw) { this.render(true); this.showLevels(); this.chart.timeScale().scrollToRealTime(); }
     renderOverlayButtons();
   }
@@ -537,6 +560,10 @@ class ChartCell {
       this.askLine.applyOptions({ price: q.ask });
     }
     this.spreadEl.textContent = "spread " + (q.ask - q.bid).toFixed(this.precision);
+    const [sell, buy] = this.quickEl.querySelectorAll("button b");
+    sell.textContent = q.bid.toFixed(this.precision);
+    buy.textContent = q.ask.toFixed(this.precision);
+    this.quickEl.querySelector(".q-spread").textContent = ((q.ask - q.bid) / (brokerSymbols[this.symbol]?.point || 0.01)).toFixed(0);
   }
 
   // Seconds left in the current bar, shown in the header.
@@ -684,7 +711,7 @@ class ChartCell {
     out.width = shot.width;
     out.height = shot.height + head;
     const ctx = out.getContext("2d");
-    ctx.fillStyle = "#161a20";
+    ctx.fillStyle = COLORS.bg;
     ctx.fillRect(0, 0, out.width, out.height);
     ctx.drawImage(shot, 0, head);
     const now = Date.now() / 1000 + TZ_SHIFT;
@@ -732,6 +759,7 @@ let stream = null;
 let retryTimer = 0;
 let serverName = "";
 const lastPrices = {};
+let tickUiFrame = 0;
 
 function setStatus(kind, message) {
   statusEl.className = "status " + (kind || "");
@@ -746,7 +774,9 @@ function onPrice(p) {
   if (prev) checkAlerts(p.symbol, prev.price, p.price);
   for (const c of cells) if (c.symbol === p.symbol) c.onPrice(p);
   updateWatchRow(p.symbol);
-  if (p.symbol === activeSymbol()) TradePanel.onTick();
+  if (p.symbol === activeSymbol() && !tickUiFrame) {
+    tickUiFrame = requestAnimationFrame(() => { tickUiFrame = 0; OrderTicket.update(); renderWatchDetail(); });
+  }
   const t = p.time + TZ_SHIFT;
   statusText.textContent = "เชื่อมต่อ MT5 แล้ว · " + fmtTime(t) + ":" + String(Math.floor(t) % 60).padStart(2, "0");
 }
@@ -849,17 +879,21 @@ function activeSymbol() {
   return (state.cells[activeCell] || state.cells[0]).symbol;
 }
 
+// ---------- top toolbar ----------
+// Symbol + link toggle, then favourite intervals for the active chart (the rest in a menu).
+const FAVORITE_INTERVALS = ["1", "5", "15", "60", "240", "D"];
+
 function renderSymbolBar() {
   const box = document.getElementById("symbols");
   box.innerHTML = "";
   const b = document.createElement("button");
-  b.className = "on";
+  b.className = "tb-btn sym-btn";
   b.textContent = "🔍 " + activeSymbol();
-  b.title = "ค้นหาสัญลักษณ์ใน MT5";
+  b.title = "ค้นหาสัญลักษณ์ (พิมพ์ตัวอักษรบนกราฟได้เลย)";
   b.addEventListener("click", () => openSymbolSearch(sym => setSymbol(sym)));
   const link = document.createElement("button");
+  link.className = "tb-btn" + (state.link ? " on" : "");
   link.textContent = state.link ? "🔗" : "⛓️‍💥";
-  link.className = state.link ? "on" : "";
   link.title = state.link ? "ทุกช่องใช้สัญลักษณ์เดียวกัน (คลิกเพื่อแยกแต่ละช่อง)" : "แต่ละช่องเลือกสัญลักษณ์เองได้ (คลิกเพื่อผูกทุกช่อง)";
   link.addEventListener("click", () => {
     state.link = !state.link;
@@ -868,6 +902,47 @@ function renderSymbolBar() {
     else renderSymbolBar();
   });
   box.append(b, link);
+  renderIntervalBar();
+  renderReplayButton();
+}
+
+function setActiveInterval(key) {
+  const c = cells[activeCell];
+  if (!c) return;
+  state.cells[activeCell].interval = key;
+  save();
+  c.sel.value = key;
+  c.destroyChart();
+  c.iv = INTERVALS[key];
+  c.start();
+  renderIntervalBar();
+}
+
+function renderIntervalBar() {
+  const box = document.getElementById("intervalBtns");
+  box.innerHTML = "";
+  const current = (state.cells[activeCell] || state.cells[0]).interval;
+  for (const key of FAVORITE_INTERVALS) {
+    const b = document.createElement("button");
+    b.className = "tb-btn" + (key === current ? " on" : "");
+    b.textContent = INTERVALS[key].label;
+    b.title = "timeframe ของช่องที่เลือก";
+    b.addEventListener("click", () => setActiveInterval(key));
+    box.appendChild(b);
+  }
+  const more = document.createElement("select");
+  more.className = "tb-select";
+  more.title = "timeframe อื่น";
+  more.innerHTML = `<option value="">▾</option>` + INTERVAL_LIST.filter(([k]) => !FAVORITE_INTERVALS.includes(k))
+    .map(([k, iv]) => `<option value="${k}" ${k === current ? "selected" : ""}>${iv.label}</option>`).join("");
+  if (!FAVORITE_INTERVALS.includes(current)) more.classList.add("on");
+  more.addEventListener("change", () => { if (more.value) setActiveInterval(more.value); });
+  box.appendChild(more);
+}
+
+function renderReplayButton() {
+  const c = cells[activeCell];
+  document.getElementById("replayBtn").classList.toggle("on", !!(c && c.replay));
 }
 
 async function connect() {
@@ -934,22 +1009,65 @@ function fillSelect(sel, options, value, onChange) {
 }
 // Changing the chart type swaps the series type, so the charts are rebuilt.
 fillSelect(document.getElementById("style"), CHART_STYLES, state.style, v => { state.style = v; save(); renderGrid(); });
-fillSelect(document.getElementById("scale"), SCALES, state.scale, v => {
-  state.scale = v;
-  save();
-  for (const c of cells) if (c.chart) c.chart.priceScale("right").applyOptions({ mode: { normal: 0, log: 1, percent: 2 }[v] });
-});
+// ---------- bottom toolbar: ranges, overlays, price scale ----------
+const RANGES = [["1D", 1], ["5D", 5], ["1M", 30], ["3M", 91], ["6M", 182], ["1Y", 365]];
 
-// ---------- overlays & replay ----------
+// Show the last `days` of the active chart, loading older history first if the chart does not
+// reach back that far yet (up to MAX_BARS).
+async function showRange(days) {
+  const c = cells[activeCell];
+  if (!c || !c.chart || !c.disp.length) return;
+  const last = c.disp[c.disp.length - 1].time;
+  const from = last - days * 86400;
+  for (let i = 0; i < 12 && c.bars[0].time > from && !c.noMoreHistory && c.bars.length < MAX_BARS; i++) {
+    while (c.loadingOlder) await new Promise(r => setTimeout(r, 50));
+    const n = c.bars.length;
+    await c.loadOlder();
+    if (c.bars.length === n) break;
+  }
+  if (!c.chart || !c.disp.length) return;
+  const first = Math.max(0, c.disp.findIndex(b => b.time >= from));
+  c.chart.timeScale().setVisibleLogicalRange({ from: first, to: c.disp.length - 1 + 5 });
+}
+
+function renderBottomBar() {
+  const ranges = document.getElementById("rangeBtns");
+  ranges.innerHTML = "";
+  for (const [label, days] of RANGES) {
+    const b = document.createElement("button");
+    b.className = "tb-btn";
+    b.textContent = label;
+    b.title = `แสดงย้อนหลัง ${label} บนช่องที่เลือก`;
+    b.addEventListener("click", () => showRange(days));
+    ranges.appendChild(b);
+  }
+  const scale = document.getElementById("scaleBtns");
+  scale.innerHTML = "";
+  for (const [key, label] of [["percent", "%"], ["log", "log"], ["normal", "auto"]]) {
+    const b = document.createElement("button");
+    b.className = "tb-btn" + (state.scale === key ? " on" : "");
+    b.textContent = label;
+    b.title = SCALES[key];
+    b.addEventListener("click", () => {
+      state.scale = state.scale === key && key !== "normal" ? "normal" : key;
+      save();
+      for (const c of cells) if (c.chart) c.chart.priceScale("right").applyOptions({ mode: { normal: 0, log: 1, percent: 2 }[state.scale] });
+      renderBottomBar();
+    });
+    scale.appendChild(b);
+  }
+  document.getElementById("toggleBottom").textContent = state.bottomOpen ? "▾" : "▴";
+  renderOverlayButtons();
+}
+
 function renderOverlayButtons() {
   const box = document.getElementById("overlayBtns");
-  if (!box) return;
   box.innerHTML = "";
   const toggle = (key, label, title, after) => {
     const b = document.createElement("button");
+    b.className = "tb-btn" + (state.overlays[key] ? " on" : "");
     b.textContent = label;
     b.title = title;
-    b.className = state.overlays[key] ? "on" : "";
     b.addEventListener("click", () => {
       state.overlays[key] = !state.overlays[key];
       save();
@@ -964,18 +1082,54 @@ function renderOverlayButtons() {
     c.overlays.profileKey = "";
     if (state.overlays.profile) c.overlays.scheduleProfile(); else c.overlays.update();
   });
-  const cell = cells[activeCell];
-  const r = document.createElement("button");
-  r.textContent = "⏪ Replay";
-  r.title = "เล่นกราฟย้อนหลังทีละแท่งในช่องที่เลือก";
-  r.className = cell && cell.replay ? "on" : "";
-  r.addEventListener("click", () => {
-    const c = cells[activeCell];
-    if (!c || !c.chart) return;
-    if (c.replay) c.stopReplay(); else c.startReplayPick();
-  });
-  box.appendChild(r);
+  renderReplayButton();
 }
+
+document.getElementById("replayBtn").addEventListener("click", () => {
+  const c = cells[activeCell];
+  if (!c || !c.chart) return;
+  if (c.replay) c.stopReplay(); else c.startReplayPick();
+});
+
+// ---------- bottom account panel ----------
+function applyBottomPanel() {
+  document.body.classList.toggle("bottom-closed", !state.bottomOpen);
+  document.getElementById("bottomPanel").style.height = state.bottomHeight + "px";
+}
+document.getElementById("toggleBottom").addEventListener("click", () => {
+  state.bottomOpen = !state.bottomOpen;
+  save(); applyBottomPanel(); renderBottomBar();
+});
+// Drag the thin bar above the panel to resize it.
+document.getElementById("bottomResize").addEventListener("pointerdown", e => {
+  const startY = e.clientY, startH = state.bottomHeight, bar = e.currentTarget;
+  bar.setPointerCapture(e.pointerId);
+  const move = ev => {
+    state.bottomHeight = Math.max(120, Math.min(window.innerHeight - 200, startH + startY - ev.clientY));
+    applyBottomPanel();
+  };
+  const up = () => { bar.removeEventListener("pointermove", move); bar.removeEventListener("pointerup", up); save(); };
+  bar.addEventListener("pointermove", move);
+  bar.addEventListener("pointerup", up);
+});
+
+// ---------- right panel ----------
+function openRightPage(page) {
+  state.rightPage = state.rightPage === page ? null : page;
+  save();
+  renderWatchlist();
+}
+document.querySelectorAll("#rightIcons [data-page]").forEach(b => b.addEventListener("click", () => openRightPage(b.dataset.page)));
+document.getElementById("tradeBtn").addEventListener("click", () => { state.rightPage = null; openRightPage("order"); });
+document.getElementById("openAlerts").addEventListener("click", () => { state.rightPage = null; openRightPage("alerts"); });
+
+// ---------- top toolbar actions ----------
+document.getElementById("snapshotBtn").addEventListener("click", () => { if (cells[activeCell]) cells[activeCell].screenshot(); });
+document.getElementById("fullscreenBtn").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen().catch(() => {});
+});
+document.getElementById("undoBtn").addEventListener("click", () => undoDrawing());
+document.getElementById("redoBtn").addEventListener("click", () => redoDrawing());
 
 // ---------- saved layouts ----------
 // A saved layout is a snapshot of everything on screen except drawings (those stay per symbol).
@@ -1016,7 +1170,7 @@ savedSel.addEventListener("change", () => {
     save();
     layoutSel.value = state.layout;
     document.getElementById("style").value = state.style;
-    document.getElementById("scale").value = state.scale;
+    renderBottomBar();
     maximized = -1;
     renderGrid();
   } else if (v.startsWith("del:") && confirm("ลบ layout “" + v.slice(4) + "” ?")) {
@@ -1063,15 +1217,17 @@ searchInput.addEventListener("keydown", e => {
 document.getElementById("closeSearch").addEventListener("click", () => searchDlg.close());
 
 // ---------- watchlist ----------
-const watchEl = document.getElementById("watchlist");
+const watchEl = document.getElementById("rightPanel");
 
 function renderWatchlist() {
-  document.body.classList.toggle("show-watch", state.showWatchlist);
-  document.body.classList.toggle("show-trade", state.showTrade);
-  document.body.classList.toggle("with-watchlist", state.showWatchlist || state.showTrade);
-  document.getElementById("toggleWatchlist").classList.toggle("on", state.showWatchlist);
-  document.getElementById("toggleTrade").classList.toggle("on", state.showTrade);
-  TradePanel.render();
+  // Only one widget page shows at a time, picked from the icon bar on the far right.
+  document.body.classList.toggle("rp-open", !!state.rightPage);
+  document.querySelectorAll("#rightPanel .rp-page").forEach(p => p.classList.toggle("on", p.dataset.page === state.rightPage));
+  document.querySelectorAll("#rightIcons [data-page]").forEach(b => b.classList.toggle("on", b.dataset.page === state.rightPage));
+  if (state.rightPage === "order") OrderTicket.update();
+  if (state.rightPage === "alerts") renderAlertsList();
+  if (state.rightPage === "objects") renderObjectTree();
+  renderWatchDetail();
   const body = document.getElementById("watchRows");
   body.innerHTML = "";
   for (const symbol of state.watchlist) {
@@ -1125,15 +1281,29 @@ document.getElementById("addWatch").addEventListener("click", () => openSymbolSe
   if (!state.watchlist.includes(sym)) state.watchlist.push(sym);
   save(); renderWatchlist(); ensureInfo(sym).then(() => updateWatchRow(sym)).catch(() => {});
 }));
-document.getElementById("toggleWatchlist").addEventListener("click", () => {
-  state.showWatchlist = !state.showWatchlist;
-  save(); renderWatchlist();
-});
-document.getElementById("toggleTrade").addEventListener("click", () => {
-  state.showTrade = !state.showTrade;
-  save(); renderWatchlist();
-});
-TradePanel.init();
+// Details of the active symbol under the watchlist, like a quote card.
+function renderWatchDetail() {
+  const box = document.getElementById("watchDetail");
+  if (!box || state.rightPage !== "watch") return;
+  const sym = activeSymbol(), info = brokerSymbols[sym], p = lastPrices[sym];
+  if (!info) { box.innerHTML = ""; return; }
+  const d = info.digits;
+  const chg = p && info.dayOpen ? p.price - info.dayOpen : null;
+  const pct = chg !== null ? chg / info.dayOpen * 100 : null;
+  const cls = chg === null ? "" : chg >= 0 ? "up" : "down";
+  box.innerHTML = `<div class="wd-sym">${escapeHtml(sym)}</div><div>${escapeHtml(info.description || "")}${info.mt5 !== sym ? " · MT5:" + escapeHtml(info.mt5) : ""}</div>
+    <div class="wd-price">${p ? p.price.toFixed(d) : "—"} <span class="${cls}" style="font-size:14px">${chg === null ? "" :
+      (chg >= 0 ? "+" : "") + chg.toFixed(d) + " (" + (pct >= 0 ? "+" : "") + pct.toFixed(2) + "%)"}</span></div>
+    <div class="wd-grid">
+      <span>Bid <b>${p ? p.bid.toFixed(d) : "—"}</b></span><span>Ask <b>${p && p.ask ? p.ask.toFixed(d) : "—"}</b></span>
+      <span>เปิดวันนี้ <b>${info.dayOpen ? info.dayOpen.toFixed(d) : "—"}</b></span>
+      <span>Spread <b>${p && p.ask ? Math.round((p.ask - p.bid) / (info.point || 0.01)) + " pt" : "—"}</b></span>
+      <span>Lot ต่ำสุด <b>${info.volumeMin ?? "—"}</b></span><span>Stops level <b>${info.stopsLevel ?? "—"} pt</b></span>
+    </div>`;
+}
+
+OrderTicket.init();
+AccountManager.init();
 
 // ---------- drawing tools ----------
 let activeTool = "cursor";
@@ -1158,40 +1328,63 @@ function selectedDrawing() {
   return selection && Drawings.get(selection.symbol, selection.id);
 }
 
+// Left toolbar icons (24×24 line drawings).
+const TOOL_ICONS = {
+  cursor: '<path d="M6 3l12 9-5.5 1.2L15 20l-2.5 1-2.6-6.6L6 18z"/>',
+  trend: '<path d="M4 19L20 5"/><circle cx="4" cy="19" r="1.8"/><circle cx="20" cy="5" r="1.8"/>',
+  ray: '<path d="M4 19L21 4"/><circle cx="4" cy="19" r="1.8"/><path d="M17 4h4v4"/>',
+  hline: '<path d="M2 12h20"/><circle cx="12" cy="12" r="1.8"/>',
+  vline: '<path d="M12 2v20"/><circle cx="12" cy="12" r="1.8"/>',
+  rect: '<rect x="4" y="6" width="16" height="12" rx="1"/>',
+  fib: '<path d="M3 5h18M3 9.5h18M3 13h18M3 16.5h18M3 20h18" stroke-width="1.2"/>',
+  magnet: '<path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  hide: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  trash: '<path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>'
+};
+const svg = name => `<svg viewBox="0 0 24 24">${TOOL_ICONS[name]}</svg>`;
+
 function renderDrawToolbar() {
   const box = document.getElementById("tools");
   box.innerHTML = "";
   for (const [name, t] of Object.entries(Drawings.TOOLS)) {
     const b = document.createElement("button");
-    b.textContent = t.label;
-    b.title = t.title;
+    b.innerHTML = svg(name);
+    const key = Object.entries(SHORTCUT_TOOLS).find(([, v]) => v === name);
+    b.title = t.title + (key ? ` (Alt+${key[0].toUpperCase()})` : "");
     if (name === activeTool) b.classList.add("on");
     b.addEventListener("click", () => UI.setTool(activeTool === name ? "cursor" : name));
     box.appendChild(b);
   }
-  const clear = document.createElement("button");
-  clear.textContent = "🗑";
-  const sym = activeSymbol();
-  clear.title = "ลบเส้นทั้งหมดของ " + sym;
-  clear.addEventListener("click", () => {
-    if (Drawings.list(sym).length && confirm("ลบเส้นทั้งหมดของ " + sym + " ?")) {
-      Drawings.clear(sym); UI.select(null);
-    }
-  });
-  const undo = document.createElement("button");
-  undo.className = "undo";
-  undo.textContent = "↶";
-  undo.title = "ย้อนกลับการวาด (Ctrl+Z)";
-  undo.disabled = !Drawings.canUndo();
-  undo.addEventListener("click", undoDrawing);
-  box.appendChild(undo);
-  box.appendChild(clear);
 
-  // Options for the selected drawing: colour, alert (horizontal lines), delete.
+  // Drawing modes: magnet (snap to OHLC), lock (no dragging), hide, remove all.
+  const modes = document.getElementById("toolModes");
+  modes.innerHTML = "";
+  const mode = (icon, on, title, fn) => {
+    const b = document.createElement("button");
+    b.innerHTML = svg(icon);
+    b.title = title;
+    if (on) b.classList.add("on");
+    b.addEventListener("click", fn);
+    modes.appendChild(b);
+  };
+  const m = Drawings.modes;
+  mode("magnet", m.magnet, "Magnet: จุดที่วาดดูดเข้าหา O/H/L/C ของแท่ง", () => { Drawings.setMode("magnet", !m.magnet); renderDrawToolbar(); });
+  mode("lock", m.locked, "ล็อกเส้นทั้งหมด (ลากย้ายไม่ได้)", () => { Drawings.setMode("locked", !m.locked); UI.select(null); renderDrawToolbar(); });
+  mode("hide", m.hidden, "ซ่อน / แสดงเส้นทั้งหมด", () => { Drawings.setMode("hidden", !m.hidden); UI.select(null); renderDrawToolbar(); });
+  const sym = activeSymbol();
+  mode("trash", false, "ลบเส้นทั้งหมดของ " + sym, () => {
+    if (Drawings.list(sym).length && confirm("ลบเส้นทั้งหมดของ " + sym + " ?")) { Drawings.clear(sym); UI.select(null); }
+  });
+  document.getElementById("undoBtn").disabled = !Drawings.canUndo();
+  document.getElementById("redoBtn").disabled = !Drawings.canRedo();
+
+  // Floating options for the selected drawing: colour, alert (horizontal lines), delete.
   const opts = document.getElementById("drawOptions");
   opts.innerHTML = "";
   const d = selectedDrawing();
   opts.hidden = !d;
+  if (state.rightPage === "objects") renderObjectTree();
   if (!d) return;
   for (const color of Drawings.COLORS) {
     const s = document.createElement("button");
@@ -1217,6 +1410,32 @@ function renderDrawToolbar() {
   opts.appendChild(del);
 }
 
+// Object tree: every drawing of the active symbol, click to select, ✕ to delete.
+const TOOL_NAMES = { trend: "เส้นเทรนด์", ray: "Ray", hline: "เส้นแนวนอน", vline: "เส้นแนวตั้ง", rect: "กล่อง", fib: "Fibonacci" };
+function renderObjectTree() {
+  const box = document.getElementById("objectTree");
+  if (!box) return;
+  const sym = activeSymbol(), list = Drawings.list(sym), digits = brokerSymbols[sym] ? brokerSymbols[sym].digits : 2;
+  box.innerHTML = list.length ? "" : `<p class="hint">ยังไม่มีเส้นบน ${escapeHtml(sym)}</p>`;
+  for (const d of list) {
+    const row = document.createElement("div");
+    row.className = "row";
+    const sel = selection && selection.id === d.id;
+    row.style.borderColor = sel ? "var(--accent)" : "";
+    const price = d.type === "vline" ? "" : d.type === "hline" ? d.p1.price.toFixed(digits) : `${d.p1.price.toFixed(digits)} → ${d.p2.price.toFixed(digits)}`;
+    row.innerHTML = `<span style="width:12px;height:12px;border-radius:50%;background:${d.color}"></span>
+      <span class="name">${TOOL_NAMES[d.type] || d.type}</span><span class="hint">${price}${d.alert && d.alert.active ? " 🔔" : ""}</span><span class="spacer"></span>`;
+    const del = document.createElement("button");
+    del.textContent = "✕";
+    del.title = "ลบ";
+    del.addEventListener("click", e => { e.stopPropagation(); Drawings.remove(sym, d.id); if (sel) UI.select(null); renderObjectTree(); renderAlertCount(); });
+    row.appendChild(del);
+    row.style.cursor = "pointer";
+    row.addEventListener("click", () => UI.select(sym, d.id));
+    box.appendChild(row);
+  }
+}
+
 function deleteSelected() {
   if (!selection) return;
   Drawings.remove(selection.symbol, selection.id);
@@ -1225,12 +1444,15 @@ function deleteSelected() {
 }
 
 Drawings.onChange(() => {
-  const u = document.querySelector("#tools .undo");
-  if (u) u.disabled = !Drawings.canUndo();
+  document.getElementById("undoBtn").disabled = !Drawings.canUndo();
+  document.getElementById("redoBtn").disabled = !Drawings.canRedo();
+  if (state.rightPage === "objects") renderObjectTree();
 });
 
-function undoDrawing() {
-  if (!Drawings.undo()) return;
+function undoDrawing() { historyStep(Drawings.undo()); }
+function redoDrawing() { historyStep(Drawings.redo()); }
+function historyStep(changed) {
+  if (!changed) return;
   if (selection && !selectedDrawing()) selection = null;
   renderDrawToolbar();
   renderAlertCount();
@@ -1243,10 +1465,11 @@ document.addEventListener("keydown", (e) => {
   const key = e.key.toLowerCase();
   if (e.key === "Escape") { UI.setTool("cursor"); UI.select(null); if (maximized >= 0) toggleMaximize(maximized); return; }
   if ((e.key === "Delete" || e.key === "Backspace") && selection) { e.preventDefault(); deleteSelected(); return; }
-  if ((e.ctrlKey || e.metaKey) && key === "z") { e.preventDefault(); undoDrawing(); return; }
+  if ((e.ctrlKey || e.metaKey) && key === "z" && !e.shiftKey) { e.preventDefault(); undoDrawing(); return; }
   if (e.altKey && SHORTCUT_TOOLS[key]) { e.preventDefault(); UI.setTool(SHORTCUT_TOOLS[key]); return; }
   if (e.altKey && key === "s") { e.preventDefault(); if (cells[activeCell]) cells[activeCell].screenshot(); return; }
-  if (e.altKey && key === "w") { e.preventDefault(); document.getElementById("toggleWatchlist").click(); return; }
+  if (e.altKey && key === "w") { e.preventDefault(); openRightPage("watch"); return; }
+  if ((e.ctrlKey || e.metaKey) && (key === "y" || (key === "z" && e.shiftKey))) { e.preventDefault(); redoDrawing(); return; }
   if (e.altKey && key === "enter") { e.preventDefault(); toggleMaximize(activeCell); return; }
   const cell = cells[activeCell];
   if (e.shiftKey && e.key === "ArrowRight" && cell && cell.replay) { e.preventDefault(); cell.replayStep(); return; }
@@ -1331,10 +1554,10 @@ function allAlerts() {
 
 function renderAlertCount() {
   const n = allAlerts().filter(a => a.d.alert.active).length;
-  document.getElementById("openAlerts").textContent = "🔔 " + n;
+  document.getElementById("alertCount").textContent = n;
+  if (state.rightPage === "alerts") renderAlertsList();
 }
 
-const alertsDlg = document.getElementById("alertsDialog");
 function renderAlertsList() {
   const box = document.getElementById("alertsList");
   box.innerHTML = "";
@@ -1364,8 +1587,6 @@ function renderAlertsList() {
     box.appendChild(row);
   }
 }
-document.getElementById("openAlerts").addEventListener("click", () => { renderAlertsList(); alertsDlg.showModal(); });
-document.getElementById("closeAlerts").addEventListener("click", () => alertsDlg.close());
 
 // ---------- indicator dialog ----------
 const indDlg = document.getElementById("indDialog");
@@ -1446,8 +1667,9 @@ setInterval(() => {
   for (const c of cells) c.updateCountdown(now);
 }, 1000);
 
+applyBottomPanel();
 renderSymbolBar();
-renderOverlayButtons();
+renderBottomBar();
 renderSavedLayouts();
 renderWatchlist();
 renderDrawToolbar();
