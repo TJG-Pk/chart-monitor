@@ -34,6 +34,44 @@ label { display:flex; gap:4px; align-items:center; cursor:pointer; }
 #watchlist { display:none; width:330px; flex:none; flex-direction:column; border-left:1px solid var(--line);
   background:var(--panel); min-height:0; }
 body.with-watchlist #watchlist { display:flex; }
+#watchSection { display:none; flex-direction:column; min-height:0; max-height:45%; }
+body.show-watch #watchSection { display:flex; }
+body.show-watch:not(.show-trade) #watchSection { max-height:none; flex:1; }
+#tradePanel { display:none; flex-direction:column; min-height:0; flex:1; overflow:auto; border-top:1px solid var(--line); }
+body.show-trade #tradePanel { display:flex; }
+#tradePanel .whead .spacer { flex:1; }
+#tradePanel .whead { gap:6px; }
+.tp-account { padding:0 10px 8px; font-size:12px; color:var(--muted); line-height:1.6; }
+.tp-account b { color:var(--text); font-weight:600; }
+.badge { display:inline-block; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:700; color:#fff; }
+.badge.demo, .badge.contest { background:#26a69a; }
+.badge.real { background:#ef5350; }
+.tp-blocked { margin:0 10px 8px; padding:8px; border:1px solid var(--down); border-radius:6px; color:var(--down); font-size:12px; }
+.tp-form { padding:0 10px 10px; display:flex; flex-direction:column; gap:8px; border-bottom:1px solid var(--line); }
+.tp-sym { font-weight:700; }
+.tp-sides { display:grid; grid-template-columns:1fr 1fr; gap:6px; }
+.tp-sides button { display:flex; flex-direction:column; align-items:center; padding:8px; font-weight:700; color:#fff; border:none; }
+.tp-sides button b { font-size:15px; font-variant-numeric:tabular-nums; }
+.tp-sides .sell { background:#c0392b; }
+.tp-sides .buy { background:#1f6feb; }
+.tp-sides button:disabled { opacity:.35; cursor:not-allowed; }
+.tp-row { display:flex; gap:8px; }
+.tp-row[hidden] { display:none; }
+.tp-row label { flex:1; flex-direction:column; align-items:stretch; gap:2px; font-size:11px; color:var(--muted); }
+.tp-row input, .tp-row select { width:100%; padding:5px 6px; }
+.tp-check { font-size:12px; color:var(--muted); }
+.tp-list { padding:6px 10px; font-size:12px; }
+.tp-head { display:flex; justify-content:space-between; color:var(--muted); margin:6px 0 4px; }
+.tp-item { display:grid; grid-template-columns:1fr auto 22px; gap:6px; align-items:center; padding:5px 0; border-bottom:1px solid var(--line); }
+.tp-item .icon { background:none; border:none; color:var(--muted); cursor:pointer; padding:2px; }
+dialog.xwide { width:min(960px, calc(100vw - 32px)); }
+.journal-summary { display:grid; grid-template-columns:repeat(auto-fit, minmax(120px, 1fr)); gap:8px; margin:12px 0; }
+.journal-summary div { display:flex; flex-direction:column; padding:8px; border:1px solid var(--line); border-radius:8px; font-size:12px; color:var(--muted); }
+.journal-summary b { font-size:16px; color:var(--text); }
+.journal-body { max-height:55vh; overflow:auto; }
+.journal-body table { width:100%; border-collapse:collapse; font-size:12px; font-variant-numeric:tabular-nums; }
+.journal-body th, .journal-body td { padding:5px 6px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; }
+.journal-body input { width:100%; min-width:140px; padding:3px 6px; font-size:12px; }
 .whead { display:flex; justify-content:space-between; align-items:center; padding:8px 10px; }
 .whead button { padding:3px 8px; font-size:12px; }
 .wcols, .wrow { display:grid; grid-template-columns:minmax(80px,1fr) 78px 56px 52px 18px; gap:4px; align-items:center; padding:5px 10px; font-size:12px; }

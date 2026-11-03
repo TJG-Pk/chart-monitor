@@ -17,7 +17,24 @@ const Mt5 = (() => {
     return data;
   }
 
+  // Trading actions. The custom header lets the bridge tell this page apart from other sites.
+  async function post(path, body) {
+    let res;
+    try {
+      res = await fetch(base + path, { method: "POST", cache: "no-store",
+        headers: { "Content-Type": "application/json", "X-Chart-Monitor": "1" }, body: JSON.stringify(body) });
+    } catch (e) {
+      throw new Error("ติดต่อ bridge ไม่ได้");
+    }
+    let data = {};
+    try { data = await res.json(); } catch (e) {}
+    if (!res.ok) throw new Error(data.error || "HTTP " + res.status);
+    return data;
+  }
+
   const status = () => get("/api/status");
+  const trading = () => get("/api/trading");
+  const history = days => get("/api/history?days=" + days);
   const symbols = () => get("/api/symbols");
   const info = symbol => get("/api/info?symbol=" + encodeURIComponent(symbol));
   const search = text => get("/api/search?q=" + encodeURIComponent(text));
@@ -53,5 +70,5 @@ const Mt5 = (() => {
     return { stop() { stopped = true; clearTimeout(timer); if (es) es.close(); } };
   }
 
-  return { configure, status, symbols, info, search, profile, candles, streamTicks };
+  return { configure, status, symbols, info, search, profile, candles, streamTicks, trading, history, post };
 })();
