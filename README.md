@@ -1,1 +1,52 @@
 # chart-monitor
+
+หน้าดูกราฟหลายช่อง (XAUUSD, NASDAQ) ราคาจริงจาก MetaTrader 5 ในเครื่อง วาดด้วย
+[Lightweight Charts](https://github.com/tradingview/lightweight-charts) ของ TradingView
+
+```
+MT5 (ล็อกอินบัญชีโบรกไว้) → bridge/bridge.py → http://localhost:8000 (หน้ากราฟ)
+```
+
+## เริ่มใช้งาน
+
+1. ติดตั้ง [Python](https://www.python.org/downloads/) 3.10 ขึ้นไป (ตอนติดตั้งติ๊ก “Add python.exe to PATH”)
+2. เปิด MetaTrader 5 แล้วล็อกอินบัญชี (บัญชี Demo ก็ได้)
+3. ดับเบิลคลิก `start-bridge.bat` ครั้งแรกจะติดตั้งไลบรารี MetaTrader5 ให้เอง แล้วเปิดเบราว์เซอร์ไปที่ http://localhost:8000
+
+ต้องเปิด MT5 และหน้าต่าง bridge ทิ้งไว้ตลอดที่ดูกราฟ ข้อมูลไม่ออกนอกเครื่อง
+(bridge รับการเชื่อมต่อจาก 127.0.0.1 เท่านั้น)
+
+### ชื่อสัญลักษณ์ของโบรก
+
+bridge หาชื่อให้อัตโนมัติ เช่น `XAUUSD`, `XAUUSDm`, `GOLD` / `NAS100`, `USTEC`, `US100`
+ถ้าหาไม่เจอ หน้าต่าง bridge จะบอก ให้กำหนดเอง:
+
+```
+start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
+```
+
+ตัวเลือกอื่น: `--port 8000`, `--terminal "C:\...\terminal64.exe"` (ถ้ามี MT5 หลายตัว),
+`--utc-offset 2` (ถ้าเวลาบนกราฟเพี้ยน ให้ใส่เวลา server ของโบรกเทียบ UTC)
+
+## ฟีเจอร์
+
+- ราคาสดจาก MT5 (ราคา Bid เหมือนกราฟใน MT5) แท่งล่าสุดขยับตามทุก tick
+- หลาย layout แต่ละช่องเลือก timeframe ได้ (1m – 1D)
+- Crosshair ซิงก์ทุกช่อง ถึงจะต่าง timeframe ก็ชี้แท่งที่ตรงกันให้
+- เลื่อนกราฟไปทางซ้ายแล้วโหลดข้อมูลย้อนหลังเพิ่มให้อัตโนมัติ
+- แท่งเทียน / Heikin Ashi, Volume (tick volume), Stochastic (14,1,3), RSI (14)
+- เวลาแสดงเป็นเวลาไทย (UTC+7) ไม่ว่าโบรกจะใช้เวลา server แบบไหน
+
+## ไฟล์
+
+| ไฟล์ | หน้าที่ |
+|---|---|
+| `start-bridge.bat` | ดับเบิลคลิกเพื่อเปิด bridge |
+| `bridge/bridge.py` | อ่านแท่งเทียนและ tick จาก MT5 แล้วส่งให้หน้าเว็บ (HTTP + Server-Sent Events) |
+| `index.html` | โครงหน้า และ dialog ตั้งค่า |
+| `app.js` | กราฟ, layout, ซิงก์ crosshair (ค่าที่แก้ได้อยู่บนสุดของไฟล์) |
+| `mt5.js` | ดึงข้อมูลจาก bridge |
+| `indicators.js` | สูตร RSI, Stochastic, Heikin Ashi |
+| `style.css` | หน้าตา |
+
+ยังไม่มีการส่งคำสั่งซื้อขาย จะต่อยอดผ่าน bridge ตัวเดียวกันภายหลัง
