@@ -1,16 +1,21 @@
 // ===== ตั้งค่า (แก้ตรงนี้ได้) =====
 // ชื่อสัญลักษณ์ต้องตรงกับ SYMBOL_CANDIDATES ใน bridge/bridge.py
 const SYMBOLS = ["XAUUSD", "NASDAQ"];
-const INTERVALS = {
-  "1":   { label: "1m",  tf: "M1",  seconds: 60 },
-  "3":   { label: "3m",  tf: "M3",  seconds: 180 },
-  "5":   { label: "5m",  tf: "M5",  seconds: 300 },
-  "15":  { label: "15m", tf: "M15", seconds: 900 },
-  "30":  { label: "30m", tf: "M30", seconds: 1800 },
-  "60":  { label: "1h",  tf: "H1",  seconds: 3600 },
-  "240": { label: "4h",  tf: "H4",  seconds: 14400 },
-  "D":   { label: "1D",  tf: "D1",  seconds: 86400 }
-};
+// Listed in menu order (an object would sort the number-like keys first).
+const INTERVAL_LIST = [
+  ["10s", { label: "10s", tf: "S10", seconds: 10 }],   // แท่งวินาทีสร้างจาก tick ใน bridge
+  ["15s", { label: "15s", tf: "S15", seconds: 15 }],
+  ["30s", { label: "30s", tf: "S30", seconds: 30 }],
+  ["1",   { label: "1m",  tf: "M1",  seconds: 60 }],
+  ["3",   { label: "3m",  tf: "M3",  seconds: 180 }],
+  ["5",   { label: "5m",  tf: "M5",  seconds: 300 }],
+  ["15",  { label: "15m", tf: "M15", seconds: 900 }],
+  ["30",  { label: "30m", tf: "M30", seconds: 1800 }],
+  ["60",  { label: "1h",  tf: "H1",  seconds: 3600 }],
+  ["240", { label: "4h",  tf: "H4",  seconds: 14400 }],
+  ["D",   { label: "1D",  tf: "D1",  seconds: 86400 }]
+];
+const INTERVALS = Object.fromEntries(INTERVAL_LIST);
 const LAYOUTS = {
   "2x2": { label:"2×2 (4 ช่อง)",        css:"grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr", n:4 },
   "big": { label:"2 เล็ก + 1 ใหญ่",      css:"grid-template-columns:1fr 1.4fr;grid-template-rows:1fr 1fr", n:3, big:2 },
@@ -69,6 +74,7 @@ function fmt(opts) {
   return fmtCache[key] || (fmtCache[key] = new Intl.DateTimeFormat("th-TH-u-ca-gregory-nu-latn", Object.assign({ timeZone: "UTC" }, opts)));
 }
 const fmtTime = t => fmt({ hour: "2-digit", minute: "2-digit", hour12: false }).format(t * 1000);
+const fmtTimeSec = t => fmt({ hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(t * 1000);
 const fmtDate = t => fmt({ day: "numeric", month: "short", year: "numeric" }).format(t * 1000);
 function tickMarkFormatter(t, type) {
   const ms = t * 1000;
@@ -77,7 +83,7 @@ function tickMarkFormatter(t, type) {
     case 1: return fmt({ month: "short" }).format(ms);
     case 2: return fmt({ day: "numeric" }).format(ms);
     case 3: return fmtTime(t);
-    default: return fmt({ hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: false }).format(ms);
+    default: return fmtTimeSec(t);
   }
 }
 
@@ -109,9 +115,9 @@ class ChartCell {
     const src = document.createElement("span");
     src.textContent = "MT5:" + brokerSymbols[this.symbol].name;
     this.sel = document.createElement("select");
-    for (const k in INTERVALS) {
+    for (const [k, iv] of INTERVAL_LIST) {
       const o = document.createElement("option");
-      o.value = k; o.textContent = INTERVALS[k].label;
+      o.value = k; o.textContent = iv.label;
       if (k === state.intervals[index]) o.selected = true;
       this.sel.appendChild(o);
     }
@@ -148,6 +154,7 @@ class ChartCell {
   createChart() {
     const LW = LightweightCharts;
     const daily = this.iv.tf === "D1";
+    const withSeconds = this.iv.seconds < 60;
     const chart = LW.createChart(this.chartEl, {
       autoSize: true,
       layout: { background: { type: "solid", color: "#161a20" }, textColor: "#9aa4b2", fontSize: 11,
@@ -155,8 +162,8 @@ class ChartCell {
       grid: { vertLines: { color: "#1c2128" }, horzLines: { color: "#1c2128" } },
       crosshair: { mode: LW.CrosshairMode.Normal },
       rightPriceScale: { borderColor: "#262c35" },
-      timeScale: { borderColor: "#262c35", timeVisible: !daily, secondsVisible: false, rightOffset: 5, tickMarkFormatter },
-      localization: { timeFormatter: t => daily ? fmtDate(t) : fmtDate(t) + " " + fmtTime(t) }
+      timeScale: { borderColor: "#262c35", timeVisible: !daily, secondsVisible: withSeconds, rightOffset: 5, tickMarkFormatter },
+      localization: { timeFormatter: t => daily ? fmtDate(t) : fmtDate(t) + " " + (withSeconds ? fmtTimeSec(t) : fmtTime(t)) }
     });
     const minMove = Math.pow(10, -this.precision);
     this.candle = chart.addSeries(LW.CandlestickSeries, {

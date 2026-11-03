@@ -31,7 +31,8 @@ start-bridge.bat --symbol XAUUSD=XAUUSD.pro --symbol NASDAQ=US100.cash
 ## ฟีเจอร์
 
 - ราคาสดจาก MT5 (ราคา Bid เหมือนกราฟใน MT5) แท่งล่าสุดขยับตามทุก tick
-- หลาย layout แต่ละช่องเลือก timeframe ได้ (1m – 1D)
+- หลาย layout แต่ละช่องเลือก timeframe ได้ (10s, 15s, 30s, 1m – 1D)
+  แท่งวินาทีสร้างจาก tick ของ MT5 ใน bridge (MT5 ไม่มีแท่งต่ำกว่า 1 นาที)
 - Crosshair ซิงก์ทุกช่อง ถึงจะต่าง timeframe ก็ชี้แท่งที่ตรงกันให้
 - เลื่อนกราฟไปทางซ้ายแล้วโหลดข้อมูลย้อนหลังเพิ่มให้อัตโนมัติ
 - แท่งเทียน / Heikin Ashi, Volume (tick volume), Stochastic (14,1,3), RSI (14)
